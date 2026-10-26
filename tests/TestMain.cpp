@@ -47,6 +47,44 @@ int main (int argc, char** argv)
         std::printf ("[resonance] 3 kHz tone level: depth 0 = %.1f dB, depth 50%% = %.1f dB, depth 50%% + HARSH zone +100%% = %.1f dB, HARSH -100%% = %.1f dB\n",
                      run (0.0f, 0.0f), run (0.5f, 0.0f), run (0.5f, 1.0f), run (0.5f, -1.0f));
     }
+    // --- Auto-match test: pink-ish noise with mud build-up at 300 Hz and a resonance at 3.2 kHz ---
+    {
+        AuricMasterProcessor ap;
+        ap.setPlayConfigDetails (2, 2, 48000.0, 512);
+        ap.prepareToPlay (48000.0, 512);   // fresh instance -> learning starts automatically
+        juce::AudioBuffer<float> b (2, 512);
+        juce::MidiBuffer m;
+        juce::Random rn (11);
+        // simple coloured noise: pink-ish (1-pole lowpass mix) + resonant bandpasses
+        auto bp = [] (double f, double q) { return juce::dsp::IIR::Coefficients<float>::makeBandPass (48000.0, (float) f, (float) q); };
+        juce::dsp::IIR::Filter<float> pinkLp, mud, harsh;
+        pinkLp.coefficients = juce::dsp::IIR::Coefficients<float>::makeFirstOrderLowPass (48000.0, 400.0f);
+        mud.coefficients = bp (300.0, 1.2);
+        harsh.coefficients = bp (3200.0, 8.0);
+        const int blocks = (int) (14.0 * 48000.0 / 512);
+        for (int k = 0; k < blocks; ++k)
+        {
+            for (int i = 0; i < 512; ++i)
+            {
+                const float w = rn.nextFloat() * 2.0f - 1.0f;
+                const float x = 0.3f * pinkLp.processSample (w) + 0.03f * w + 0.5f * mud.processSample (w) + 0.25f * harsh.processSample (w);
+                b.setSample (0, i, x); b.setSample (1, i, x);
+            }
+            ap.processBlock (b, m);
+            if (k % 20 == 0) juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+        }
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+        if (auto* r = ap.getAutoResult())
+        {
+            std::printf ("[auto] depth=%.0f%%  summary: %s\n", r->depth, r->summary.toRawUTF8());
+            for (int i = 0; i < numClashBands; ++i)
+                std::printf ("[auto]   %-9s %7.0f Hz  %+5.0f %%  %.2f oct\n", AuricMasterProcessor::clashNames[i], r->bands[(size_t) i].freq, r->bands[(size_t) i].amount, r->bands[(size_t) i].width);
+            std::printf ("[auto] param clash4_freq now = %.0f Hz\n", ap.apvts.getRawParameterValue ("clash4_freq")->load());
+        }
+        else
+            std::printf ("[auto] NO RESULT (learning=%d progress=%.2f)\n", (int) ap.isAutoLearning(), ap.getAutoProgress());
+    }
+
     AuricMasterProcessor p;
     p.setPlayConfigDetails (2, 2, 48000.0, 512);
     p.prepareToPlay (48000.0, 512);
@@ -121,6 +159,29 @@ int main (int argc, char** argv)
             if (auto* t = dynamic_cast<juce::ToggleButton*> (c))
                 if (t->getButtonText() == "RESONANCE") { t->setToggleState (true, juce::dontSendNotification); t->onClick(); }
         snap (argv[2]);
+        if (argc > 3)
+        {
+            // keep playing until the auto-match is done, then show the result
+            juce::dsp::IIR::Filter<float> mudF, harshF;
+            mudF.coefficients = juce::dsp::IIR::Coefficients<float>::makeBandPass (48000.0, 300.0f, 1.2f);
+            harshF.coefficients = juce::dsp::IIR::Coefficients<float>::makeBandPass (48000.0, 3200.0f, 8.0f);
+            for (int b = 0; b < 1200 && p.getAutoResult() == nullptr; ++b)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    const float w = rng.nextFloat() * 2 - 1;
+                    float s = 0.05f * w + 0.3f * (float) std::sin (phase) + 0.5f * mudF.processSample (w) + 0.3f * harshF.processSample (w);
+                    phase += 2 * juce::MathConstants<double>::pi * 80.0 / 48000.0;
+                    buf.setSample (0, i, s); buf.setSample (1, i, s * 0.9f);
+                }
+                p.processBlock (buf, midi);
+                if (disp) disp->refresh();
+                if (b % 10 == 0) juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+            }
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+            if (disp) disp->refresh();
+            snap (argv[3]);
+        }
         p.editorBeingDeleted (ed.get());
     }
     return bad ? 1 : 0;

@@ -16,6 +16,8 @@ All-in-one-Mastering-Kette: **Input → Tone (Bass/Air) → Resonance Control (F
 | ON / DELTA / HARD | Ein/Aus · DELTA = nur das Entfernte hören · HARD = präziser, Standard (Soft) = weicher |
 | 6 Bänder | LOW (Shelf), MUD, BOX, HARSH, SIBILANCE (Bell), HIGH (Shelf): ziehen = Frequenz/Stärke (−100…+100 %), Mausrad = Breite, Doppelklick = Reset |
 | Live-Display | Spektrum mit Peak-Hold, Absenkung in Echtzeit (von oben), Markierungen der aktiven Resonanzen mit Frequenz und dB, Frequenzanzeige unter der Maus, „Reduction History“-Wasserfall |
+| **AUTO-MATCH** | Erkennt Frequenz-Clashes automatisch und stellt die 6 Bänder + Depth ein (siehe unten) |
+| Profil  | Referenz-Klangbalance: Pop, Hip-Hop / Trap, EDM, Rock, Acoustic – Wechsel passt die Bänder sofort neu an |
 | PUNCH   | Glue-Kompression (Threshold & Ratio gekoppelt, Auto-Makeup) |
 | WARMTH  | Asymmetrische tanh-Sättigung (gerade Obertöne), oversampled |
 | WIDTH   | M/S-Stereobreite 0–200 % |
@@ -24,6 +26,16 @@ All-in-one-Mastering-Kette: **Input → Tone (Bass/Air) → Resonance Control (F
 | MIX     | Dry/Wet (latenzkompensiert) |
 
 Hinweis: Durch die FFT-Analyse hat das Plugin ca. 45 ms Latenz. FL Studio gleicht das automatisch aus (PDC).
+
+## Auto-Match – so funktioniert es
+
+1. **Beim ersten Einfügen** auf einen Mixer-Slot startet die Analyse automatisch. Spiele den Song ab – Stille wird ignoriert, es werden ca. 10 s echtes Audio ausgewertet (Fortschritt im Display).
+2. Gemessen werden das **Langzeit-Spektrum** und wie oft jede Frequenz als Resonanz heraussticht.
+3. Das Spektrum wird mit einer **Referenz-Kurve** für das gewählte Genre verglichen (Annäherung an typische kommerzielle Master, keine offizielle Norm).
+4. Pro Band wird die stärkste **lokale Überhöhung** gesucht → Frequenz, Stärke und Breite werden gesetzt. Zu dünne Bereiche bekommen einen negativen Wert (werden geschützt). Die allgemeine Klangbalance zählt nur gedämpft – das ist Aufgabe von Bass/Air bzw. EQ.
+5. Die gelb gestrichelte Linie im Display zeigt danach, wo der Mix über/unter der Referenz liegt.
+
+**AUTO**-Button = Analyse neu starten (z. B. im Refrain). Gespeicherte Projekte werden beim Öffnen **nicht** neu analysiert – deine Einstellungen bleiben erhalten. Alle Werte lassen sich danach von Hand nachjustieren.
 
 ## Bauen unter Windows (für FL Studio)
 

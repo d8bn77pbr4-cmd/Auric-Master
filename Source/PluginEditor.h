@@ -9,6 +9,9 @@ public:
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider&) override;
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool highlighted, bool down) override;
+    void drawComboBox (juce::Graphics&, int width, int height, bool isButtonDown,
+                       int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox&) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override { return juce::FontOptions (12.5f, juce::Font::bold); }
 };
 
 class LevelMeter : public juce::Component
@@ -104,6 +107,9 @@ private:
 
     juce::ToggleButton bypass { "BYPASS" }, resOn { "ON" }, resDelta { "DELTA" }, resHard { "HARD" };
     juce::ToggleButton tabMaster { "MASTER" }, tabResonance { "RESONANCE" };
+    juce::ToggleButton autoButton { "AUTO" };
+    juce::ComboBox profileBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> profileAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAtt, resOnAtt, resDeltaAtt, resHardAtt;
 
     LevelMeter inL, inR, outL, outR, compGr { true }, limGr { true };

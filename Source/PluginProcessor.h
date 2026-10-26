@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
 #include "ResonanceSuppressor.h"
+#include "AutoMatcher.h"
 
 // Simple integer-delay circular buffer (used for dry-path latency compensation)
 class SimpleDelay
@@ -61,11 +62,19 @@ private:
     float hold = 1.0f, env = 1.0f, releaseCoeff = 0.999f, ceiling = 1.0f, minGain = 1.0f;
 };
 
-class AuricMasterProcessor : public juce::AudioProcessor
+class AuricMasterProcessor : public juce::AudioProcessor, private juce::Timer
 {
 public:
     AuricMasterProcessor();
-    ~AuricMasterProcessor() override = default;
+    ~AuricMasterProcessor() override { stopTimer(); }
+
+    // --- Auto-match: learn the mix, detect clashes, set the resonance bands ---
+    static constexpr float autoLearnSeconds = 10.0f;
+    void startAutoMatch();
+    bool isAutoLearning() const { return resonance.isLearning(); }
+    float getAutoProgress() const { return resonance.getLearnProgress(); }
+    const AutoMatcher::Result* getAutoResult() const { return hasAutoResult ? &autoResult : nullptr; }
+    juce::uint32 getAutoResultTime() const { return autoResultTime; }
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -106,6 +115,15 @@ public:
 
 private:
     void updateFilters();
+    void timerCallback() override;
+    void applyAutoMatch();
+
+    bool pendingAutoLearn = true, hasAutoResult = false;
+    int lastAutoProfile = -1;
+    juce::uint32 autoResultTime = 0;
+    AutoMatcher::Result autoResult;
+    std::vector<float> learnedFreqs;
+    std::vector<double> learnedPower, learnedActivity;
 
     static constexpr int osFactorLog2 = 2; // 4x oversampling
     using Filter = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;

@@ -28,6 +28,10 @@ void ResonanceSuppressor::prepare (double sampleRate, int numChannels)
     for (auto* v : { &magDb, &ref1, &ref2, &grDb, &grSmooth, &grTmp, &weights, &binFreq })
         v->assign (bins, 0.0f);
     prefix.assign (bins + 1, 0.0);
+    learnPower.assign (bins, 0.0);
+    learnActivity.assign (bins, 0.0);
+    if (learning.exchange (false))
+        learnRequested.store (true);   // restart an interrupted analysis with the new sample rate
     for (size_t b = 0; b < bins; ++b)
         binFreq[b] = (float) ((double) b * sr / fftSize);
 
@@ -163,6 +167,37 @@ void ResonanceSuppressor::processFrame()
     const float frameSec = (float) hop / (float) sr;
     const float attC = std::exp (-frameSec / juce::jmax (0.0005f, settings.attackMs * 0.001f));
     const float relC = std::exp (-frameSec / juce::jmax (0.001f, settings.releaseMs * 0.001f));
+
+    // auto-match learning: long-term power + how often/strongly each bin sticks out
+    if (learnRequested.exchange (false))
+    {
+        std::fill (learnPower.begin(), learnPower.end(), 0.0);
+        std::fill (learnActivity.begin(), learnActivity.end(), 0.0);
+        learnFrames = 0;
+        learnTargetFrames = juce::jmax (1, (int) (learnSeconds / frameSec));
+        learnProgress.store (0.0f);
+        learning.store (true);
+    }
+    if (learning.load() && frameMax > -50.0f)   // only count frames with real signal
+    {
+        for (int b = 1; b < bins; ++b)
+        {
+            learnPower[(size_t) b] += std::pow (10.0, magDb[(size_t) b] * 0.1);
+            learnActivity[(size_t) b] += juce::jlimit (0.0f, 20.0f, magDb[(size_t) b] - ref2[(size_t) b]);
+        }
+        ++learnFrames;
+        learnProgress.store ((float) learnFrames / (float) learnTargetFrames);
+        if (learnFrames >= learnTargetFrames)
+        {
+            for (int b = 1; b < bins; ++b)
+            {
+                learnPower[(size_t) b] /= learnFrames;
+                learnActivity[(size_t) b] /= learnFrames;
+            }
+            learning.store (false);
+            learnFinished.store (true);
+        }
+    }
 
     for (int b = 1; b < bins; ++b)
     {

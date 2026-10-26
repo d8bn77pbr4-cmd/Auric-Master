@@ -65,6 +65,17 @@ public:
     void copyDisplay (std::array<float, numDisplayPoints>& spectrum, std::array<float, numDisplayPoints>& reduction);
     static float displayPointToFreq (float i) { return 20.0f * std::pow (1000.0f, i / (numDisplayPoints - 1)); }
 
+    // --- Auto-match learning (thread-safe handshake between message and audio thread) ---
+    void requestLearn (float seconds) { learnSeconds = seconds; learnRequested.store (true); learnFinished.store (false); }
+    void cancelLearn() { learnRequested.store (false); learning.store (false); }
+    bool isLearning() const { return learning.load() || learnRequested.load(); }
+    float getLearnProgress() const { return learnProgress.load(); }
+    bool consumeLearnResult() { return learnFinished.exchange (false); }
+    // valid after consumeLearnResult() returned true (audio thread no longer writes them)
+    const std::vector<double>& getLearnPower() const { return learnPower; }
+    const std::vector<double>& getLearnActivity() const { return learnActivity; }
+    const std::vector<float>& getBinFrequencies() const { return binFreq; }
+
 private:
     void processFrame();
     void updateWeights();
@@ -82,6 +93,12 @@ private:
     ClashNodes cachedNodes;
     bool weightsValid = false;
     juce::SmoothedValue<float> mixS, trimS;
+
+    std::atomic<bool> learnRequested { false }, learning { false }, learnFinished { false };
+    std::atomic<float> learnProgress { 0.0f };
+    float learnSeconds = 10.0f;
+    int learnFrames = 0, learnTargetFrames = 1;
+    std::vector<double> learnPower, learnActivity;
 
     juce::SpinLock displayLock;
     std::array<float, numDisplayPoints> dispSpectrum {}, dispReduction {};

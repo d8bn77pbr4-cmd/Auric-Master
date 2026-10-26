@@ -31,6 +31,27 @@ AuricLookAndFeel::AuricLookAndFeel()
     setColour (juce::CaretComponent::caretColourId, Pal::accent);
     setColour (juce::Label::textColourId, Pal::dim);
     setColour (juce::Label::textWhenEditingColourId, Pal::text);
+    setColour (juce::ComboBox::textColourId, Pal::text);
+    setColour (juce::ComboBox::arrowColourId, Pal::accent);
+    setColour (juce::PopupMenu::backgroundColourId, Pal::panel);
+    setColour (juce::PopupMenu::textColourId, Pal::text);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, Pal::accent);
+    setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
+}
+
+void AuricLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool, int, int, int, int, juce::ComboBox& box)
+{
+    auto r = juce::Rectangle<float> (0, 0, (float) width, (float) height).reduced (1.0f);
+    g.setColour (Pal::panel);
+    g.fillRoundedRectangle (r, 6.0f);
+    g.setColour (box.isMouseOver (true) ? Pal::accent : Pal::border);
+    g.drawRoundedRectangle (r, 6.0f, 1.2f);
+
+    juce::Path arrow;
+    const float ax = r.getRight() - 16.0f, ay = r.getCentreY();
+    arrow.addTriangle (ax - 4.0f, ay - 2.0f, ax + 4.0f, ay - 2.0f, ax, ay + 3.0f);
+    g.setColour (Pal::accent);
+    g.fillPath (arrow);
 }
 
 void AuricLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
@@ -330,6 +351,22 @@ void ClashDisplay::paint (juce::Graphics& g)
         }
     }
 
+    // auto-match: mix vs. reference curve (dashed), shown after an analysis
+    if (auto* res = proc.getAutoResult())
+    {
+        Path devPath;
+        for (int i = 0; i < N; ++i)
+        {
+            const float y = amountToY (jlimit (-100.0f, 100.0f, res->deviation[(size_t) i] * 13.3f));
+            if (i == 0) devPath.startNewSubPath (xAt (i), y); else devPath.lineTo (xAt (i), y);
+        }
+        Path dashed;
+        const float dashes[] = { 4.0f, 4.0f };
+        PathStrokeType (1.2f).createDashedStroke (dashed, devPath, dashes, 2);
+        g.setColour (Colour (0xffffc46b).withAlpha (0.75f));
+        g.fillPath (dashed);
+    }
+
     // band sensitivity curve
     const auto cn = currentNodes();
     Path curve;
@@ -375,6 +412,50 @@ void ClashDisplay::paint (juce::Graphics& g)
         g.setColour (Colours::white);
         g.setFont (FontOptions (10.5f, Font::bold));
         g.drawText (s, box, Justification::centred);
+    }
+
+    // auto-match status
+    {
+        String line1, line2;
+        float progress = -1.0f;
+        if (proc.isAutoLearning())
+        {
+            progress = jlimit (0.0f, 1.0f, proc.getAutoProgress());
+            line1 = String::fromUTF8 ("AUTO-MATCH  \xc2\xb7  analysiere Mix ") + String (roundToInt (progress * 100.0f)) + " %";
+            line2 = progress <= 0.0f ? String::fromUTF8 ("Spiele den Song ab \xe2\x80\x93 Stille wird ignoriert") : String ("Frequenz-Clashes werden erkannt ...");
+        }
+        else if (auto* res = proc.getAutoResult())
+        {
+            if (Time::getMillisecondCounter() - proc.getAutoResultTime() < 12000)
+            {
+                line1 = String::fromUTF8 ("AUTO-MATCH angewendet  \xc2\xb7  Profil: ") + proc.apvts.getParameter ("auto_profile")->getCurrentValueAsText();
+                line2 = res->summary;
+            }
+        }
+        if (line1.isNotEmpty())
+        {
+            g.setFont (FontOptions (10.5f, Font::bold));
+            const float w = jmin (a.getWidth() - 20.0f, jmax (GlyphArrangement::getStringWidth (g.getCurrentFont(), line1),
+                                                              GlyphArrangement::getStringWidth (g.getCurrentFont(), line2)) + 30.0f);
+            auto box = Rectangle<float> (a.getCentreX() - w * 0.5f, a.getY() + a.getHeight() * 0.5f - 26.0f, w, progress >= 0.0f ? 52.0f : 42.0f);
+            g.setColour (Pal::screenBottom.withAlpha (0.92f));
+            g.fillRoundedRectangle (box, 6.0f);
+            g.setColour (Colour (0xffffc46b));
+            g.drawRoundedRectangle (box, 6.0f, 1.0f);
+            auto inner = box.reduced (12.0f, 6.0f);
+            g.drawText (line1, inner.removeFromTop (15.0f), Justification::centred);
+            g.setColour (Colours::white.withAlpha (0.85f));
+            g.setFont (FontOptions (10.0f));
+            g.drawText (line2, inner.removeFromTop (15.0f), Justification::centred, true);
+            if (progress >= 0.0f)
+            {
+                auto bar = inner.removeFromTop (8.0f).reduced (0.0f, 1.0f);
+                g.setColour (Colours::white.withAlpha (0.12f));
+                g.fillRoundedRectangle (bar, 3.0f);
+                g.setColour (Colour (0xffffc46b));
+                g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * progress), 3.0f);
+            }
+        }
     }
 
     // crosshair frequency readout
@@ -505,6 +586,14 @@ AuricMasterEditor::AuricMasterEditor (AuricMasterProcessor& p)
         t->setClickingTogglesState (true);
         addAndMakeVisible (t);
     }
+    addAndMakeVisible (autoButton);
+    autoButton.setClickingTogglesState (false);
+    autoButton.setTooltip ("Analysiert den Mix und stellt die Resonanz-Baender automatisch ein");
+    autoButton.onClick = [this] { proc.startAutoMatch(); };
+    profileBox.addItemList (AutoMatcher::profileNames(), 1);
+    addAndMakeVisible (profileBox);
+    profileAtt = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "auto_profile", profileBox);
+
     tabMaster.onClick = [this] { setPage (0); };
     tabResonance.onClick = [this] { setPage (1); };
 
@@ -633,6 +722,8 @@ void AuricMasterEditor::resized()
     bypass.setBounds (getWidth() - 116, 16, 96, 28);
     tabMaster.setBounds (300, 16, 110, 28);
     tabResonance.setBounds (416, 16, 110, 28);
+    profileBox.setBounds (getWidth() - 360, 16, 150, 28);
+    autoButton.setBounds (getWidth() - 204, 16, 80, 28);
 
     if (page == 1)
     {
@@ -710,4 +801,5 @@ void AuricMasterEditor::timerCallback()
     compGr.setLevel (proc.compGainDb.load());
     limGr.setLevel (proc.limGainDb.load());
     display.refresh();
+    autoButton.setToggleState (proc.isAutoLearning(), juce::dontSendNotification);
 }

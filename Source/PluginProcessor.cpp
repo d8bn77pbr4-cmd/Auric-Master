@@ -85,6 +85,7 @@ AuricMasterProcessor::AuricMasterProcessor()
     pResDepth = apvts.getRawParameterValue ("res_depth");
     pResSharp = apvts.getRawParameterValue ("res_sharp");
     pResSens  = apvts.getRawParameterValue ("res_sens");
+    startTimerHz (10);
     pResAttack  = apvts.getRawParameterValue ("res_attack");
     pResRelease = apvts.getRawParameterValue ("res_release");
     pResMix     = apvts.getRawParameterValue ("res_mix");
@@ -136,6 +137,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AuricMasterProcessor::create
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_mix", 1 },     "Resonance Mix",     NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, attrPct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_trim", 1 },    "Resonance Trim",    NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, attrDb));
     p.push_back (std::make_unique<AudioParameterBool>  (ParameterID { "res_hard", 1 },    "Resonance Hard Mode", false));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "auto_profile", 1 }, "Auto Match Profile", AutoMatcher::profileNames(), 0));
 
     auto hz = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " kHz" : String (roundToInt (v)) + " Hz"; };
     auto oct = [] (float v, int) { return String (v, 2) + " oct"; };
@@ -190,6 +192,12 @@ void AuricMasterProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     limiter.prepare (osRate, (int) numCh, la);
 
     resonance.prepare (sampleRate, (int) numCh);
+    if (pendingAutoLearn)
+    {
+        // freshly inserted on a mixer track: analyse the first seconds of audio automatically
+        pendingAutoLearn = false;
+        resonance.requestLearn (autoLearnSeconds);
+    }
 
     const int latency = resonance.getLatency() + (int) std::round (oversampling->getLatencyInSamples()) + la / osFactor;
     setLatencySamples (latency);
@@ -439,7 +447,68 @@ void AuricMasterProcessor::setStateInformation (const void* data, int sizeInByte
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            // restored project: keep the user's settings, no automatic re-analysis
+            if (apvts.state.getProperty ("autoLearned", false))
+            {
+                pendingAutoLearn = false;
+                resonance.cancelLearn();
+            }
+        }
+}
+
+void AuricMasterProcessor::startAutoMatch()
+{
+    resonance.requestLearn (autoLearnSeconds);
+}
+
+void AuricMasterProcessor::timerCallback()
+{
+    if (resonance.consumeLearnResult())
+    {
+        learnedFreqs = resonance.getBinFrequencies();
+        learnedPower = resonance.getLearnPower();
+        learnedActivity = resonance.getLearnActivity();
+        applyAutoMatch();
+    }
+    else if (hasAutoResult && (int) apvts.getRawParameterValue ("auto_profile")->load() != lastAutoProfile)
+    {
+        applyAutoMatch();   // profile switched: re-fit instantly from the learned data
+    }
+}
+
+void AuricMasterProcessor::applyAutoMatch()
+{
+    if (learnedPower.empty()) return;
+
+    lastAutoProfile = (int) apvts.getRawParameterValue ("auto_profile")->load();
+    std::array<float, numClashBands> defaults;
+    std::copy (std::begin (clashDefaultFreqs), std::end (clashDefaultFreqs), defaults.begin());
+    autoResult = AutoMatcher::analyse (learnedFreqs, learnedPower, learnedActivity, lastAutoProfile, defaults, clashNames);
+
+    auto set = [this] (const juce::String& id, float value)
+    {
+        if (auto* p = apvts.getParameter (id))
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->convertTo0to1 (value));
+            p->endChangeGesture();
+        }
+    };
+    for (int i = 0; i < numClashBands; ++i)
+    {
+        const auto n = "clash" + juce::String (i + 1);
+        const auto& b = autoResult.bands[(size_t) i];
+        set (n + "_freq", b.freq);
+        set (n + "_amt", b.amount);
+        set (n + "_width", b.width);
+    }
+    set ("res_depth", autoResult.depth);
+
+    apvts.state.setProperty ("autoLearned", true, nullptr);
+    hasAutoResult = true;
+    autoResultTime = juce::Time::getMillisecondCounter();
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
