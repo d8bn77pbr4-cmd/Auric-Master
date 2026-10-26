@@ -224,13 +224,15 @@ void ResonanceSuppressor::processFrame()
     }
     grSmooth[0] = 0.0f;
 
-    // apply gains + synthesis
+    // apply gains + synthesis (gain per bin computed once for all channels)
+    for (int b = 0; b < bins; ++b)
+        grTmp[(size_t) b] = grSmooth[(size_t) b] > 0.001f ? std::exp (grSmooth[(size_t) b] * -0.11512925f) : 1.0f; // 10^(-dB/20)
     for (int ch = 0; ch < numCh; ++ch)
     {
         auto& d = fftData[(size_t) ch];
         for (int b = 0; b < bins; ++b)
         {
-            const float gain = juce::Decibels::decibelsToGain (-grSmooth[(size_t) b]);
+            const float gain = grTmp[(size_t) b];
             d[(size_t) (2 * b)] *= gain;
             d[(size_t) (2 * b + 1)] *= gain;
         }
