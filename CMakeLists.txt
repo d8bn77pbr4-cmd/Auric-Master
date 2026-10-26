@@ -15,17 +15,25 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
+    set(AURIC_FORMATS VST3 AU)
+else()
+    set(AURIC_FORMATS VST3)
+endif()
+
 juce_add_plugin(AuricMaster
     COMPANY_NAME "AuricAudio"
     PLUGIN_MANUFACTURER_CODE Auri
     PLUGIN_CODE AuMs
-    FORMATS VST3
+    FORMATS ${AURIC_FORMATS}
     PRODUCT_NAME "Auric Master"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
-    VST3_CATEGORIES Fx Mastering Dynamics)
+    VST3_CATEGORIES Fx Mastering Dynamics
+    AU_MAIN_TYPE kAudioUnitType_Effect)
 
 target_sources(AuricMaster PRIVATE
     Source/PluginProcessor.cpp

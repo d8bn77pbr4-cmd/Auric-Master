@@ -41,7 +41,7 @@ Hinweis: Durch die FFT-Analyse hat das Plugin ca. 45 ms Latenz. FL Studio gleich
 
 **Variante A – ohne lokale Tools (GitHub Actions):**
 1. Ordner als GitHub-Repo hochladen.
-2. Unter *Actions* läuft „Build Windows VST3“ automatisch.
+2. Unter *Actions* läuft „Build Plugins (Windows + macOS)“ automatisch.
 3. Artefakt `AuricMaster-VST3-Windows` herunterladen, entpacken.
 
 **Variante B – lokal:**
@@ -57,3 +57,15 @@ Hinweis: Durch die FFT-Analyse hat das Plugin ca. 45 ms Latenz. FL Studio gleich
 1. `Auric Master.vst3` nach `C:\Program Files\Common Files\VST3\` kopieren.
 2. FL Studio → *Options → Manage plugins → Find plugins*.
 3. Im Mixer auf einen Insert-Slot (z. B. Master) → *Auric Master*.
+
+## macOS
+
+1. GitHub → *Actions* → Artefakt **AuricMaster-macOS** herunterladen und entpacken.
+2. Kopieren:
+   - `Auric Master.vst3` → `~/Library/Audio/Plug-Ins/VST3/`
+   - `Auric Master.component` → `~/Library/Audio/Plug-Ins/Components/`
+3. Terminal (Gatekeeper-Sperre für unsignierte Plugins aufheben):
+   ```
+   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"Auric Master.vst3" ~/Library/Audio/Plug-Ins/Components/"Auric Master.component"
+   ```
+4. FL Studio → *Options → Manage plugins → Find installed plugins* → Stern bei *Auric Master* setzen.
