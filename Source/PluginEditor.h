@@ -24,14 +24,16 @@ private:
     int holdFrames = 0;
 };
 
-// Spectrum + resonance reduction display with 4 draggable "frequency clash" nodes
+// Live resonance display: spectrum, reduction, peak markers, waterfall and 6 draggable clash bands
 class ClashDisplay : public juce::Component
 {
 public:
     explicit ClashDisplay (AuricMasterProcessor&);
     void refresh();
+    void setLarge (bool shouldBeLarge) { large = shouldBeLarge; repaint(); }
 
     void paint (juce::Graphics&) override;
+    void resized() override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -48,6 +50,7 @@ private:
     };
 
     juce::Rectangle<float> plotArea() const;
+    juce::Rectangle<float> waterfallArea() const;
     float freqToX (float f) const;
     float xToFreq (float x) const;
     float amountToY (float a) const;
@@ -55,11 +58,16 @@ private:
     juce::Point<float> nodePos (int i) const;
     int hitNode (juce::Point<float> p) const;
     ClashNodes currentNodes() const;
+    void pushWaterfallRow();
+    static juce::String freqText (float f);
 
     AuricMasterProcessor& proc;
-    std::array<Node, 4> nodes;
-    std::array<float, ResonanceSuppressor::numDisplayPoints> spectrum {}, reduction {};
-    int hovered = -1, dragging = -1;
+    std::array<Node, numClashBands> nodes;
+    std::array<float, ResonanceSuppressor::numDisplayPoints> spectrum {}, reduction {}, peakHold {};
+    juce::Image waterfall;
+    bool large = false;
+    int hovered = -1, dragging = -1, selected = -1;
+    float mouseX = -1.0f;
 };
 
 class AuricMasterEditor : public juce::AudioProcessorEditor, private juce::Timer
@@ -73,6 +81,7 @@ public:
 
 private:
     void timerCallback() override;
+    void setPage (int page);
 
     struct Knob
     {
@@ -87,13 +96,15 @@ private:
 
     AuricMasterProcessor& proc;
     AuricLookAndFeel lnf;
+    int page = 0; // 0 = master, 1 = resonance
 
     ClashDisplay display;
-    Knob resDepth, resSharp, resSens, resSpeed;
+    Knob resDepth, resSharp, resSens, resAttack, resRelease, resMix, resTrim;
     Knob punch, bass, air, warmth, width, input, ceiling, output, mix;
 
-    juce::ToggleButton bypass { "BYPASS" }, resOn { "ON" }, resDelta { "DELTA" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAtt, resOnAtt, resDeltaAtt;
+    juce::ToggleButton bypass { "BYPASS" }, resOn { "ON" }, resDelta { "DELTA" }, resHard { "HARD" };
+    juce::ToggleButton tabMaster { "MASTER" }, tabResonance { "RESONANCE" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAtt, resOnAtt, resDeltaAtt, resHardAtt;
 
     LevelMeter inL, inR, outL, outR, compGr { true }, limGr { true };
     juce::Rectangle<int> inMeterArea, outMeterArea, grMeterArea;

@@ -80,26 +80,47 @@ int main (int argc, char** argv)
     std::printf ("latency=%d  maxOut=%.2f dBFS (ceiling -1.0)  compGR=%.1f dB  limGR=%.1f dB  nan=%d\n",
                  p.getLatencySamples(), juce::Decibels::gainToDecibels (maxOut), p.compGainDb.load(), p.limGainDb.load(), (int) bad);
 
-    if (argc > 1)
+    if (argc > 2)
     {
         auto setP = [&] (const char* id, float v) { auto* pr = p.apvts.getParameter (id); pr->setValueNotifyingHost (pr->convertTo0to1 (v)); };
-        setP ("clash3_amt", 60.0f);
-        setP ("clash1_amt", -40.0f);
-        *p.apvts.getRawParameterValue ("res_depth") = 60.0f;
-        for (int b = 0; b < 100; ++b)
+        setP ("clash4_amt", 60.0f);
+        setP ("clash2_amt", -40.0f);
+        setP ("clash6_amt", -30.0f);
+        setP ("res_depth", 60.0f);
+        setP ("input", 0.0f);
+
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
+        ClashDisplay* disp = nullptr;
+        for (auto* c : ed->getChildren())
+            if (auto* d = dynamic_cast<ClashDisplay*> (c)) disp = d;
+
+        double ph2 = 0.0;
+        for (int b = 0; b < 300; ++b)
         {
+            const double resF = 1500.0 + 2500.0 * std::sin (b * 0.03); // moving resonance
             for (int i = 0; i < 512; ++i)
             {
-                float s = 0.05f * (rng.nextFloat() * 2 - 1) + 0.2f * (float) std::sin (phase * 37.5) + 0.3f * (float) std::sin (phase);
+                float s = 0.08f * (rng.nextFloat() * 2 - 1) + 0.3f * (float) std::sin (phase)
+                        + ((b / 40) % 2 == 0 ? 0.15f : 0.03f) * (float) std::sin (ph2);
                 phase += 2 * juce::MathConstants<double>::pi * 80.0 / 48000.0;
+                ph2 += 2 * juce::MathConstants<double>::pi * resF / 48000.0;
                 buf.setSample (0, i, s); buf.setSample (1, i, s * 0.9f);
             }
             p.processBlock (buf, midi);
+            if (disp) disp->refresh();
         }
-        std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
-        auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
-        juce::File f (argv[1]); f.deleteFile();
-        juce::FileOutputStream os (f); juce::PNGImageFormat().writeImageToStream (img, os);
+
+        auto snap = [&] (const char* path)
+        {
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            juce::File f (path); f.deleteFile();
+            juce::FileOutputStream os (f); juce::PNGImageFormat().writeImageToStream (img, os);
+        };
+        snap (argv[1]);
+        for (auto* c : ed->getChildren())
+            if (auto* t = dynamic_cast<juce::ToggleButton*> (c))
+                if (t->getButtonText() == "RESONANCE") { t->setToggleState (true, juce::dontSendNotification); t->onClick(); }
+        snap (argv[2]);
         p.editorBeingDeleted (ed.get());
     }
     return bad ? 1 : 0;

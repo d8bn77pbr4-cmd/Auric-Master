@@ -99,8 +99,10 @@ public:
     std::atomic<float> compGainDb { 0.0f }, limGainDb { 0.0f };
     ResonanceSuppressor resonance;
 
-    static constexpr const char* clashNames[4] = { "MUD", "BOX", "HARSH", "SIBILANCE" };
-    static constexpr float clashDefaultFreqs[4] = { 250.0f, 600.0f, 3000.0f, 7500.0f };
+    static constexpr const char* clashNames[numClashBands] = { "LOW", "MUD", "BOX", "HARSH", "SIBILANCE", "HIGH" };
+    static constexpr float clashDefaultFreqs[numClashBands] = { 80.0f, 250.0f, 600.0f, 3000.0f, 7500.0f, 12000.0f };
+    static constexpr int clashTypes[numClashBands] = { ClashNode::lowShelf, ClashNode::bell, ClashNode::bell,
+                                                       ClashNode::bell, ClashNode::bell, ClashNode::highShelf };
 
 private:
     void updateFilters();
@@ -135,8 +137,12 @@ private:
     std::atomic<float>* pResDepth;
     std::atomic<float>* pResSharp;
     std::atomic<float>* pResSens;
-    std::atomic<float>* pResSpeed;
-    std::array<std::atomic<float>*, 4> pClashFreq {}, pClashAmt {}, pClashWidth {};
+    std::atomic<float>* pResAttack;
+    std::atomic<float>* pResRelease;
+    std::atomic<float>* pResMix;
+    std::atomic<float>* pResTrim;
+    std::atomic<float>* pResHard;
+    std::array<std::atomic<float>*, numClashBands> pClashFreq {}, pClashAmt {}, pClashWidth {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AuricMasterProcessor)
 };

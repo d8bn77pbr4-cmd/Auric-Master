@@ -5,15 +5,18 @@
 #include <array>
 #include <vector>
 
-// One adjustable "frequency clash" zone: scales how hard resonances are suppressed around 'freq'
+// One adjustable "frequency clash" band: scales how hard resonances are suppressed in its area
 struct ClashNode
 {
+    enum Type { bell = 0, lowShelf = 1, highShelf = 2 };
     float freq = 1000.0f;   // Hz
-    float amount = 0.0f;    // -1 (ignore zone) .. +1 (double sensitivity)
-    float widthOct = 1.0f;  // zone width in octaves
+    float amount = 0.0f;    // -1 (ignore area) .. +1 (double sensitivity)
+    float widthOct = 1.0f;  // bell width / shelf slope in octaves
+    int type = bell;
 };
 
-using ClashNodes = std::array<ClashNode, 4>;
+static constexpr int numClashBands = 6;
+using ClashNodes = std::array<ClashNode, numClashBands>;
 
 // Sensitivity weighting across frequency (shared by DSP and display so both match exactly)
 inline float clashWeight (float freq, const ClashNodes& nodes)
@@ -21,8 +24,17 @@ inline float clashWeight (float freq, const ClashNodes& nodes)
     float w = 1.0f;
     for (const auto& n : nodes)
     {
-        const float d = std::log2 (freq / n.freq) / (0.5f * n.widthOct);
-        w += n.amount * std::exp (-0.5f * d * d);
+        const float o = std::log2 (freq / n.freq);
+        switch (n.type)
+        {
+            case ClashNode::lowShelf:  w += n.amount / (1.0f + std::exp (o / (0.25f * n.widthOct))); break;
+            case ClashNode::highShelf: w += n.amount / (1.0f + std::exp (-o / (0.25f * n.widthOct))); break;
+            default:
+            {
+                const float d = o / (0.5f * n.widthOct);
+                w += n.amount * std::exp (-0.5f * d * d);
+            }
+        }
     }
     return juce::jlimit (0.0f, 3.0f, w);
 }
@@ -32,13 +44,14 @@ inline float clashWeight (float freq, const ClashNodes& nodes)
 class ResonanceSuppressor
 {
 public:
-    static constexpr int numDisplayPoints = 256;
+    static constexpr int numDisplayPoints = 400;
     static constexpr float maxReductionDb = 24.0f;
 
     struct Settings
     {
-        bool enabled = true, delta = false;
-        float depth = 0.3f, sharpness = 0.5f, sensitivity = 0.5f, speed = 0.5f;
+        bool enabled = true, delta = false, hard = false;
+        float depth = 0.3f, sharpness = 0.5f, sensitivity = 0.5f;
+        float attackMs = 5.0f, releaseMs = 80.0f, mix = 1.0f, trimDb = 0.0f;
         ClashNodes nodes;
     };
 
@@ -48,9 +61,9 @@ public:
     int getLatency() const { return fftSize; }
     void process (juce::AudioBuffer<float>& buffer, int numChannels);
 
-    // Editor side: copy the latest spectrum (dBFS) and reduction (dB, positive) curves
+    // Editor side: copy the latest live spectrum (dB, tilt-compensated) and reduction (dB, positive) curves
     void copyDisplay (std::array<float, numDisplayPoints>& spectrum, std::array<float, numDisplayPoints>& reduction);
-    static float displayPointToFreq (int i) { return 20.0f * std::pow (1000.0f, (float) i / (numDisplayPoints - 1)); }
+    static float displayPointToFreq (float i) { return 20.0f * std::pow (1000.0f, i / (numDisplayPoints - 1)); }
 
 private:
     void processFrame();
@@ -63,13 +76,14 @@ private:
     std::unique_ptr<juce::dsp::FFT> fft;
     std::vector<float> window;
     std::vector<std::vector<float>> inRing, outRing, fftData;
-    std::vector<float> magDb, ref1, ref2, grDb, grSmooth, weights, binFreq;
+    std::vector<float> magDb, ref1, ref2, grDb, grSmooth, grTmp, weights, binFreq;
     std::vector<double> prefix;
     Settings settings;
     ClashNodes cachedNodes;
     bool weightsValid = false;
+    juce::SmoothedValue<float> mixS, trimS;
 
     juce::SpinLock displayLock;
     std::array<float, numDisplayPoints> dispSpectrum {}, dispReduction {};
-    std::array<int, numDisplayPoints> dispBin {};
+    std::array<float, numDisplayPoints> dispBinLo {}, dispBinHi {};
 };

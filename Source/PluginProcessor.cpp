@@ -85,8 +85,12 @@ AuricMasterProcessor::AuricMasterProcessor()
     pResDepth = apvts.getRawParameterValue ("res_depth");
     pResSharp = apvts.getRawParameterValue ("res_sharp");
     pResSens  = apvts.getRawParameterValue ("res_sens");
-    pResSpeed = apvts.getRawParameterValue ("res_speed");
-    for (int i = 0; i < 4; ++i)
+    pResAttack  = apvts.getRawParameterValue ("res_attack");
+    pResRelease = apvts.getRawParameterValue ("res_release");
+    pResMix     = apvts.getRawParameterValue ("res_mix");
+    pResTrim    = apvts.getRawParameterValue ("res_trim");
+    pResHard    = apvts.getRawParameterValue ("res_hard");
+    for (int i = 0; i < numClashBands; ++i)
     {
         const auto n = juce::String (i + 1);
         pClashFreq[(size_t) i]  = apvts.getRawParameterValue ("clash" + n + "_freq");
@@ -121,15 +125,24 @@ juce::AudioProcessorValueTreeState::ParameterLayout AuricMasterProcessor::create
     p.push_back (std::make_unique<AudioParameterBool>  (ParameterID { "res_delta", 1 }, "Resonance Delta",       false));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_depth", 1 }, "Resonance Depth",       NormalisableRange<float> (0.0f, 100.0f, 0.1f), 30.0f, attrPct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_sharp", 1 }, "Resonance Sharpness",   NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, attrPct));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_sens", 1 },  "Resonance Sensitivity", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, attrPct));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_speed", 1 }, "Resonance Speed",       NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, attrPct));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_sens", 1 },  "Resonance Selectivity", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, attrPct));
+    auto ms = [] (float v, int) { return String (v, v < 10.0f ? 1 : 0) + " ms"; };
+    auto attrMs = AudioParameterFloatAttributes().withStringFromValueFunction (ms);
+    NormalisableRange<float> attRange (0.5f, 100.0f, 0.1f), relRange (10.0f, 500.0f, 1.0f);
+    attRange.setSkewForCentre (8.0f);
+    relRange.setSkewForCentre (100.0f);
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_attack", 1 },  "Resonance Attack",  attRange, 5.0f, attrMs));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_release", 1 }, "Resonance Release", relRange, 80.0f, attrMs));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_mix", 1 },     "Resonance Mix",     NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, attrPct));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_trim", 1 },    "Resonance Trim",    NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, attrDb));
+    p.push_back (std::make_unique<AudioParameterBool>  (ParameterID { "res_hard", 1 },    "Resonance Hard Mode", false));
 
     auto hz = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " kHz" : String (roundToInt (v)) + " Hz"; };
     auto oct = [] (float v, int) { return String (v, 2) + " oct"; };
     auto bipct = [] (float v, int) { return (v > 0 ? "+" : "") + String (roundToInt (v)) + " %"; };
     NormalisableRange<float> freqRange (20.0f, 20000.0f);
     freqRange.setSkewForCentre (1000.0f);
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < numClashBands; ++i)
     {
         const auto n = String (i + 1);
         const auto name = String ("Clash ") + clashNames[i];
@@ -281,9 +294,13 @@ void AuricMasterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         rs.depth = pResDepth->load() * 0.01f;
         rs.sharpness = pResSharp->load() * 0.01f;
         rs.sensitivity = pResSens->load() * 0.01f;
-        rs.speed = pResSpeed->load() * 0.01f;
-        for (size_t i = 0; i < 4; ++i)
-            rs.nodes[i] = { pClashFreq[i]->load(), pClashAmt[i]->load() * 0.01f, pClashWidth[i]->load() };
+        rs.hard = pResHard->load() > 0.5f;
+        rs.attackMs = pResAttack->load();
+        rs.releaseMs = pResRelease->load();
+        rs.mix = pResMix->load() * 0.01f;
+        rs.trimDb = pResTrim->load();
+        for (size_t i = 0; i < (size_t) numClashBands; ++i)
+            rs.nodes[i] = { pClashFreq[i]->load(), pClashAmt[i]->load() * 0.01f, pClashWidth[i]->load(), clashTypes[i] };
         resonance.setSettings (rs);
         resonance.process (buffer, numCh);
     }

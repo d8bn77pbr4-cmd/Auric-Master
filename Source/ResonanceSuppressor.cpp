@@ -25,14 +25,24 @@ void ResonanceSuppressor::prepare (double sampleRate, int numChannels)
     fftData.assign ((size_t) numCh, std::vector<float> ((size_t) fftSize * 2, 0.0f));
 
     const size_t bins = (size_t) fftSize / 2 + 1;
-    for (auto* v : { &magDb, &ref1, &ref2, &grDb, &grSmooth, &weights, &binFreq })
+    for (auto* v : { &magDb, &ref1, &ref2, &grDb, &grSmooth, &grTmp, &weights, &binFreq })
         v->assign (bins, 0.0f);
     prefix.assign (bins + 1, 0.0);
     for (size_t b = 0; b < bins; ++b)
         binFreq[b] = (float) ((double) b * sr / fftSize);
 
+    // each display point covers the bins between its neighbours' geometric midpoints
     for (int i = 0; i < numDisplayPoints; ++i)
-        dispBin[(size_t) i] = juce::jlimit (1, (int) bins - 1, (int) std::round (displayPointToFreq (i) * fftSize / sr));
+    {
+        const float lo = displayPointToFreq ((float) i - 0.5f), hi = displayPointToFreq ((float) i + 0.5f);
+        dispBinLo[(size_t) i] = juce::jlimit (1.0f, (float) bins - 1.0f, (float) (lo * fftSize / sr));
+        dispBinHi[(size_t) i] = juce::jlimit (1.0f, (float) bins - 1.0f, (float) (hi * fftSize / sr));
+    }
+
+    mixS.reset (sampleRate, 0.03);
+    trimS.reset (sampleRate, 0.03);
+    mixS.setCurrentAndTargetValue (settings.mix);
+    trimS.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (settings.trimDb));
 
     weightsValid = false;
     reset();
@@ -53,9 +63,13 @@ void ResonanceSuppressor::process (juce::AudioBuffer<float>& buffer, int channel
     channels = juce::jmin (channels, numCh);
     const int n = buffer.getNumSamples();
     const bool delta = settings.delta;
+    mixS.setTargetValue (settings.mix);
+    trimS.setTargetValue (juce::Decibels::decibelsToGain (settings.trimDb));
 
     for (int i = 0; i < n; ++i)
     {
+        const float mix = mixS.getNextValue();
+        const float trim = trimS.getNextValue();
         for (int ch = 0; ch < channels; ++ch)
         {
             auto& in = inRing[(size_t) ch];
@@ -64,7 +78,7 @@ void ResonanceSuppressor::process (juce::AudioBuffer<float>& buffer, int channel
             const float wet = out[(size_t) pos];
             out[(size_t) pos] = 0.0f;
             in[(size_t) pos] = buffer.getSample (ch, i);
-            buffer.setSample (ch, i, delta ? dry - wet : wet);
+            buffer.setSample (ch, i, delta ? dry - wet : (dry + (wet - dry) * mix) * trim);
         }
         if (++pos >= fftSize) pos = 0;
         if (++hopCounter >= hop)
@@ -109,7 +123,8 @@ void ResonanceSuppressor::processFrame()
     for (size_t i = 0; i < cachedNodes.size() && ! nodesChanged; ++i)
         nodesChanged = ! juce::exactlyEqual (cachedNodes[i].freq, settings.nodes[i].freq)
                     || ! juce::exactlyEqual (cachedNodes[i].amount, settings.nodes[i].amount)
-                    || ! juce::exactlyEqual (cachedNodes[i].widthOct, settings.nodes[i].widthOct);
+                    || ! juce::exactlyEqual (cachedNodes[i].widthOct, settings.nodes[i].widthOct)
+                    || cachedNodes[i].type != settings.nodes[i].type;
     if (nodesChanged)
         updateWeights();
 
@@ -146,10 +161,8 @@ void ResonanceSuppressor::processFrame()
     const float threshold = juce::jmap (settings.sensitivity, 12.0f, 1.0f);
     const float depth = settings.enabled ? settings.depth : 0.0f;
     const float frameSec = (float) hop / (float) sr;
-    const float attTime = juce::jmap (settings.speed, 0.030f, 0.002f);
-    const float relTime = juce::jmap (settings.speed, 0.300f, 0.030f);
-    const float attC = std::exp (-frameSec / attTime);
-    const float relC = std::exp (-frameSec / relTime);
+    const float attC = std::exp (-frameSec / juce::jmax (0.0005f, settings.attackMs * 0.001f));
+    const float relC = std::exp (-frameSec / juce::jmax (0.001f, settings.releaseMs * 0.001f));
 
     for (int b = 1; b < bins; ++b)
     {
@@ -166,10 +179,15 @@ void ResonanceSuppressor::processFrame()
     }
     grDb[0] = 0.0f;
 
-    for (int b = 1; b < bins - 1; ++b)
-        grSmooth[(size_t) b] = 0.25f * grDb[(size_t) b - 1] + 0.5f * grDb[(size_t) b] + 0.25f * grDb[(size_t) b + 1];
+    // frequency smoothing of the gain curve: hard = 1 pass (precise), soft = 3 passes (gentler)
+    grSmooth = grDb;
+    for (int pass = 0; pass < (settings.hard ? 1 : 3); ++pass)
+    {
+        grTmp = grSmooth;
+        for (int b = 1; b < bins - 1; ++b)
+            grSmooth[(size_t) b] = 0.25f * grTmp[(size_t) b - 1] + 0.5f * grTmp[(size_t) b] + 0.25f * grTmp[(size_t) b + 1];
+    }
     grSmooth[0] = 0.0f;
-    grSmooth[(size_t) bins - 1] = grDb[(size_t) bins - 1];
 
     // apply gains + synthesis
     for (int ch = 0; ch < numCh; ++ch)
@@ -188,16 +206,41 @@ void ResonanceSuppressor::processFrame()
             out[(size_t) ((pos + k) & mask)] += d[(size_t) k] * window[(size_t) k] * olaNorm;
     }
 
-    // display data (never blocks the audio thread)
+    // live display data (never blocks the audio thread)
     const juce::SpinLock::ScopedTryLockType lock (displayLock);
     if (lock.isLocked())
     {
+        const float specFall = std::exp (-frameSec / 0.25f);
+        const float redFall = std::exp (-frameSec / 0.12f);
         for (int i = 0; i < numDisplayPoints; ++i)
         {
-            const int b = dispBin[(size_t) i];
+            const float lo = dispBinLo[(size_t) i], hi = dispBinHi[(size_t) i];
+            float spec, red;
+            if (hi - lo < 1.0f)
+            {
+                // fewer than one bin per point: interpolate
+                const float c = 0.5f * (lo + hi);
+                const int b0 = juce::jmin ((int) c, bins - 2);
+                const float f = c - (float) b0;
+                spec = magDb[(size_t) b0] + f * (magDb[(size_t) b0 + 1] - magDb[(size_t) b0]);
+                red = grSmooth[(size_t) b0] + f * (grSmooth[(size_t) b0 + 1] - grSmooth[(size_t) b0]);
+            }
+            else
+            {
+                spec = -200.0f; red = 0.0f;
+                for (int b = (int) lo; b <= (int) hi; ++b)
+                {
+                    spec = juce::jmax (spec, magDb[(size_t) b]);
+                    red = juce::jmax (red, grSmooth[(size_t) b]);
+                }
+            }
+            // +4.5 dB/oct tilt so typical mixes look roughly flat
+            spec += 4.5f * std::log2 (displayPointToFreq ((float) i) / 1000.0f);
+
             auto& s = dispSpectrum[(size_t) i];
-            s = 0.75f * s + 0.25f * juce::jmax (-120.0f, magDb[(size_t) b]);
-            dispReduction[(size_t) i] = grSmooth[(size_t) b];
+            s = spec > s ? spec : spec + (s - spec) * specFall;
+            auto& r = dispReduction[(size_t) i];
+            r = red > r ? red : red + (r - red) * redFall;
         }
     }
 }

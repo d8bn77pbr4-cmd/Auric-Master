@@ -7,13 +7,15 @@ All-in-one-Mastering-Kette: **Input → Tone (Bass/Air) → Resonance Control (F
 | INPUT   | Pegel in die Kette (± 12 dB) – mehr Input = lauter in den Limiter |
 | BASS    | Low-Shelf 100 Hz (± 6 dB) |
 | AIR     | High-Shelf 12 kHz (± 6 dB) |
-| **Resonance Control** | Dynamische spektrale Resonanz-Unterdrückung (FFT, stereo-gelinkt) |
+| **Resonance Control** | Dynamische spektrale Resonanz-Unterdrückung (FFT, stereo-gelinkt). Eigener Tab **RESONANCE** mit großem Live-Display |
 | DEPTH   | Wie stark herausstehende Resonanzen abgesenkt werden |
 | SHARPNESS | Hoch = nur schmale, „pfeifende“ Resonanzen; niedrig = auch breite Anhebungen |
-| SENSITIVITY | Ab wie viel dB über dem geglätteten Spektrum eingegriffen wird |
-| SPEED   | Reaktionszeit (Attack/Release) |
-| ON / DELTA | Ein/Aus · DELTA = nur das Entfernte hören (zum Finden von Clashes) |
-| Clash-Punkte | MUD, BOX, HARSH, SIBILANCE im Display: ziehen = Frequenz/Stärke (−100…+100 %), Mausrad = Breite, Doppelklick = Reset |
+| SELECTIVITY | Ab wie viel dB über dem geglätteten Spektrum eingegriffen wird |
+| ATTACK / RELEASE | Reaktionszeit der Absenkung (0,5–100 ms / 10–500 ms) |
+| MIX / TRIM | Anteil der Bearbeitung und Pegelausgleich der Sektion |
+| ON / DELTA / HARD | Ein/Aus · DELTA = nur das Entfernte hören · HARD = präziser, Standard (Soft) = weicher |
+| 6 Bänder | LOW (Shelf), MUD, BOX, HARSH, SIBILANCE (Bell), HIGH (Shelf): ziehen = Frequenz/Stärke (−100…+100 %), Mausrad = Breite, Doppelklick = Reset |
+| Live-Display | Spektrum mit Peak-Hold, Absenkung in Echtzeit (von oben), Markierungen der aktiven Resonanzen mit Frequenz und dB, Frequenzanzeige unter der Maus, „Reduction History“-Wasserfall |
 | PUNCH   | Glue-Kompression (Threshold & Ratio gekoppelt, Auto-Makeup) |
 | WARMTH  | Asymmetrische tanh-Sättigung (gerade Obertöne), oversampled |
 | WIDTH   | M/S-Stereobreite 0–200 % |
