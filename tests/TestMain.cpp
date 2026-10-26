@@ -6,6 +6,47 @@
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
+
+    // --- ResonanceSuppressor unit tests ---
+    {
+        ResonanceSuppressor rs;
+        rs.prepare (48000.0, 2);
+        ResonanceSuppressor::Settings st; st.depth = 0.0f;
+        rs.setSettings (st);
+        const int L = rs.getLatency(), total = 48000;
+        juce::AudioBuffer<float> in (2, total), out;
+        juce::Random r (7);
+        for (int c = 0; c < 2; ++c) for (int i = 0; i < total; ++i) in.setSample (c, i, r.nextFloat() - 0.5f);
+        out.makeCopyOf (in);
+        for (int s = 0; s < total; s += 480) { juce::AudioBuffer<float> blk (out.getArrayOfWritePointers(), 2, s, 480); rs.process (blk, 2); }
+        float err = 0;
+        for (int i = L + 4096; i < total; ++i) err = juce::jmax (err, std::abs (out.getSample (0, i) - in.getSample (0, i - L)));
+        std::printf ("[resonance] depth0 identity max error = %.2e (latency %d)\n", err, L);
+
+        // resonance test: pink-ish noise + loud 3 kHz tone
+        auto run = [&] (float depth, float harshAmt)
+        {
+            ResonanceSuppressor rr; rr.prepare (48000.0, 1);
+            ResonanceSuppressor::Settings s2; s2.depth = depth; s2.sensitivity = 0.5f;
+            s2.nodes[2] = { 3000.0f, harshAmt, 1.0f };
+            rr.setSettings (s2);
+            juce::AudioBuffer<float> b (1, total);
+            juce::Random rn (3);
+            for (int i = 0; i < total; ++i)
+                b.setSample (0, i, 0.1f * (rn.nextFloat() - 0.5f) + 0.3f * (float) std::sin (2 * juce::MathConstants<double>::pi * 3000.0 * i / 48000.0));
+            rr.process (b, 1);
+            // measure 3 kHz component via correlation on the second half
+            double re = 0, im = 0;
+            for (int i = total / 2; i < total; ++i)
+            {
+                const double ph = 2 * juce::MathConstants<double>::pi * 3000.0 * (i - L) / 48000.0;
+                re += b.getSample (0, i) * std::sin (ph); im += b.getSample (0, i) * std::cos (ph);
+            }
+            return 20.0 * std::log10 (2.0 * std::sqrt (re * re + im * im) / (total / 2) / 0.3);
+        };
+        std::printf ("[resonance] 3 kHz tone level: depth 0 = %.1f dB, depth 50%% = %.1f dB, depth 50%% + HARSH zone +100%% = %.1f dB, HARSH -100%% = %.1f dB\n",
+                     run (0.0f, 0.0f), run (0.5f, 0.0f), run (0.5f, 1.0f), run (0.5f, -1.0f));
+    }
     AuricMasterProcessor p;
     p.setPlayConfigDetails (2, 2, 48000.0, 512);
     p.prepareToPlay (48000.0, 512);
@@ -41,6 +82,20 @@ int main (int argc, char** argv)
 
     if (argc > 1)
     {
+        auto setP = [&] (const char* id, float v) { auto* pr = p.apvts.getParameter (id); pr->setValueNotifyingHost (pr->convertTo0to1 (v)); };
+        setP ("clash3_amt", 60.0f);
+        setP ("clash1_amt", -40.0f);
+        *p.apvts.getRawParameterValue ("res_depth") = 60.0f;
+        for (int b = 0; b < 100; ++b)
+        {
+            for (int i = 0; i < 512; ++i)
+            {
+                float s = 0.05f * (rng.nextFloat() * 2 - 1) + 0.2f * (float) std::sin (phase * 37.5) + 0.3f * (float) std::sin (phase);
+                phase += 2 * juce::MathConstants<double>::pi * 80.0 / 48000.0;
+                buf.setSample (0, i, s); buf.setSample (1, i, s * 0.9f);
+            }
+            p.processBlock (buf, midi);
+        }
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
         auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
         juce::File f (argv[1]); f.deleteFile();

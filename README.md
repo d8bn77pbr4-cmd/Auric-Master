@@ -1,18 +1,27 @@
 # Auric Master – VST3 Mixbus/Mastering-Plugin
 
-All-in-one-Mastering-Kette: **Input → Tone (Bass/Air) → Glue-Kompressor (Punch) → Stereobreite → Röhren-Sättigung (Warmth) → Lookahead-Limiter (4× Oversampling) → Output/Mix**.
+All-in-one-Mastering-Kette: **Input → Tone (Bass/Air) → Resonance Control (Frequenz-Clashes) → Glue-Kompressor (Punch) → Stereobreite → Röhren-Sättigung (Warmth) → Lookahead-Limiter (4× Oversampling) → Output/Mix**.
 
 | Regler  | Funktion |
 |---------|----------|
 | INPUT   | Pegel in die Kette (± 12 dB) – mehr Input = lauter in den Limiter |
 | BASS    | Low-Shelf 100 Hz (± 6 dB) |
 | AIR     | High-Shelf 12 kHz (± 6 dB) |
+| **Resonance Control** | Dynamische spektrale Resonanz-Unterdrückung (FFT, stereo-gelinkt) |
+| DEPTH   | Wie stark herausstehende Resonanzen abgesenkt werden |
+| SHARPNESS | Hoch = nur schmale, „pfeifende“ Resonanzen; niedrig = auch breite Anhebungen |
+| SENSITIVITY | Ab wie viel dB über dem geglätteten Spektrum eingegriffen wird |
+| SPEED   | Reaktionszeit (Attack/Release) |
+| ON / DELTA | Ein/Aus · DELTA = nur das Entfernte hören (zum Finden von Clashes) |
+| Clash-Punkte | MUD, BOX, HARSH, SIBILANCE im Display: ziehen = Frequenz/Stärke (−100…+100 %), Mausrad = Breite, Doppelklick = Reset |
 | PUNCH   | Glue-Kompression (Threshold & Ratio gekoppelt, Auto-Makeup) |
 | WARMTH  | Asymmetrische tanh-Sättigung (gerade Obertöne), oversampled |
 | WIDTH   | M/S-Stereobreite 0–200 % |
 | CEILING | Limiter-Ceiling (−3 … 0 dBFS) |
 | OUTPUT  | Ausgangspegel |
 | MIX     | Dry/Wet (latenzkompensiert) |
+
+Hinweis: Durch die FFT-Analyse hat das Plugin ca. 45 ms Latenz. FL Studio gleicht das automatisch aus (PDC).
 
 ## Bauen unter Windows (für FL Studio)
 

@@ -29,7 +29,8 @@ juce_add_plugin(AuricMaster
 
 target_sources(AuricMaster PRIVATE
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp)
+    Source/PluginEditor.cpp
+    Source/ResonanceSuppressor.cpp)
 
 target_compile_definitions(AuricMaster PUBLIC
     JUCE_WEB_BROWSER=0
@@ -48,7 +49,7 @@ target_link_libraries(AuricMaster
 option(AURIC_BUILD_TESTS "Build the offline test runner" OFF)
 if(AURIC_BUILD_TESTS)
     juce_add_console_app(AuricTests PRODUCT_NAME "AuricTests")
-    target_sources(AuricTests PRIVATE tests/TestMain.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
+    target_sources(AuricTests PRIVATE tests/TestMain.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/ResonanceSuppressor.cpp)
     target_compile_definitions(AuricTests PRIVATE JucePlugin_Name="Auric Master" JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(AuricTests PRIVATE juce::juce_audio_utils juce::juce_dsp juce::juce_gui_basics)
 endif()

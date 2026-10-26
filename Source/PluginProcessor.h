@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
+#include "ResonanceSuppressor.h"
 
 // Simple integer-delay circular buffer (used for dry-path latency compensation)
 class SimpleDelay
@@ -96,6 +97,10 @@ public:
     // Metering (read by the editor)
     std::atomic<float> inPeakL { 0.0f }, inPeakR { 0.0f }, outPeakL { 0.0f }, outPeakR { 0.0f };
     std::atomic<float> compGainDb { 0.0f }, limGainDb { 0.0f };
+    ResonanceSuppressor resonance;
+
+    static constexpr const char* clashNames[4] = { "MUD", "BOX", "HARSH", "SIBILANCE" };
+    static constexpr float clashDefaultFreqs[4] = { 250.0f, 600.0f, 3000.0f, 7500.0f };
 
 private:
     void updateFilters();
@@ -125,6 +130,13 @@ private:
     std::atomic<float>* pOutput;
     std::atomic<float>* pMix;
     std::atomic<float>* pBypass;
+    std::atomic<float>* pResOn;
+    std::atomic<float>* pResDelta;
+    std::atomic<float>* pResDepth;
+    std::atomic<float>* pResSharp;
+    std::atomic<float>* pResSens;
+    std::atomic<float>* pResSpeed;
+    std::array<std::atomic<float>*, 4> pClashFreq {}, pClashAmt {}, pClashWidth {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AuricMasterProcessor)
 };

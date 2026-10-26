@@ -80,6 +80,19 @@ AuricMasterProcessor::AuricMasterProcessor()
     pOutput  = apvts.getRawParameterValue ("output");
     pMix     = apvts.getRawParameterValue ("mix");
     pBypass  = apvts.getRawParameterValue ("bypass");
+    pResOn    = apvts.getRawParameterValue ("res_on");
+    pResDelta = apvts.getRawParameterValue ("res_delta");
+    pResDepth = apvts.getRawParameterValue ("res_depth");
+    pResSharp = apvts.getRawParameterValue ("res_sharp");
+    pResSens  = apvts.getRawParameterValue ("res_sens");
+    pResSpeed = apvts.getRawParameterValue ("res_speed");
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto n = juce::String (i + 1);
+        pClashFreq[(size_t) i]  = apvts.getRawParameterValue ("clash" + n + "_freq");
+        pClashAmt[(size_t) i]   = apvts.getRawParameterValue ("clash" + n + "_amt");
+        pClashWidth[(size_t) i] = apvts.getRawParameterValue ("clash" + n + "_width");
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AuricMasterProcessor::createLayout()
@@ -102,6 +115,31 @@ juce::AudioProcessorValueTreeState::ParameterLayout AuricMasterProcessor::create
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "output", 1 },  "Output",  NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, attrDb));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mix", 1 },     "Mix",     NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, attrPct));
     p.push_back (std::make_unique<AudioParameterBool>  (ParameterID { "bypass", 1 },  "Bypass",  false));
+
+    // Resonance suppressor
+    p.push_back (std::make_unique<AudioParameterBool>  (ParameterID { "res_on", 1 },    "Resonance On",          true));
+    p.push_back (std::make_unique<AudioParameterBool>  (ParameterID { "res_delta", 1 }, "Resonance Delta",       false));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_depth", 1 }, "Resonance Depth",       NormalisableRange<float> (0.0f, 100.0f, 0.1f), 30.0f, attrPct));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_sharp", 1 }, "Resonance Sharpness",   NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, attrPct));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_sens", 1 },  "Resonance Sensitivity", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, attrPct));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "res_speed", 1 }, "Resonance Speed",       NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, attrPct));
+
+    auto hz = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " kHz" : String (roundToInt (v)) + " Hz"; };
+    auto oct = [] (float v, int) { return String (v, 2) + " oct"; };
+    auto bipct = [] (float v, int) { return (v > 0 ? "+" : "") + String (roundToInt (v)) + " %"; };
+    NormalisableRange<float> freqRange (20.0f, 20000.0f);
+    freqRange.setSkewForCentre (1000.0f);
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto n = String (i + 1);
+        const auto name = String ("Clash ") + clashNames[i];
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "clash" + n + "_freq", 1 }, name + " Freq", freqRange, clashDefaultFreqs[i],
+                                                            AudioParameterFloatAttributes().withStringFromValueFunction (hz)));
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "clash" + n + "_amt", 1 }, name + " Amount", NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f,
+                                                            AudioParameterFloatAttributes().withStringFromValueFunction (bipct)));
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "clash" + n + "_width", 1 }, name + " Width", NormalisableRange<float> (0.25f, 3.0f, 0.01f), 1.0f,
+                                                            AudioParameterFloatAttributes().withStringFromValueFunction (oct)));
+    }
 
     return { p.begin(), p.end() };
 }
@@ -138,7 +176,9 @@ void AuricMasterProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     la = ((la + osFactor - 1) / osFactor) * osFactor;
     limiter.prepare (osRate, (int) numCh, la);
 
-    const int latency = (int) std::round (oversampling->getLatencyInSamples()) + la / osFactor;
+    resonance.prepare (sampleRate, (int) numCh);
+
+    const int latency = resonance.getLatency() + (int) std::round (oversampling->getLatencyInSamples()) + la / osFactor;
     setLatencySamples (latency);
 
     dryDelay.prepare ((int) numCh, latency + 8);
@@ -232,7 +272,24 @@ void AuricMasterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         highShelf.process (ctx);
     }
 
-    // 3) Punch: stereo-linked glue compressor, soft knee, auto makeup
+    // 3) Resonance suppression (frequency clashes)
+    const bool deltaListen = pResDelta->load() > 0.5f && pResOn->load() > 0.5f;
+    {
+        ResonanceSuppressor::Settings rs;
+        rs.enabled = pResOn->load() > 0.5f;
+        rs.delta = pResDelta->load() > 0.5f;
+        rs.depth = pResDepth->load() * 0.01f;
+        rs.sharpness = pResSharp->load() * 0.01f;
+        rs.sensitivity = pResSens->load() * 0.01f;
+        rs.speed = pResSpeed->load() * 0.01f;
+        for (size_t i = 0; i < 4; ++i)
+            rs.nodes[i] = { pClashFreq[i]->load(), pClashAmt[i]->load() * 0.01f, pClashWidth[i]->load() };
+        resonance.setSettings (rs);
+        resonance.process (buffer, numCh);
+    }
+
+    // 4) Punch: stereo-linked glue compressor, soft knee, auto makeup
+    if (! deltaListen)
     {
         const float punch = pPunch->load() * 0.01f;
         const float threshold = -2.0f - 22.0f * punch;   // dB
@@ -272,9 +329,13 @@ void AuricMasterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
         compGainDb = juce::Decibels::gainToDecibels (minG);
     }
+    else
+    {
+        compGainDb = 0.0f;
+    }
 
-    // 4) Stereo width (M/S)
-    if (numCh > 1)
+    // 5) Stereo width (M/S)
+    if (numCh > 1 && ! deltaListen)
     {
         auto* l = buffer.getWritePointer (0);
         auto* r = buffer.getWritePointer (1);
@@ -290,7 +351,7 @@ void AuricMasterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     else
         widthS.skip (numSamples);
 
-    // 5) Oversampled: warmth saturation + lookahead limiter
+    // 6) Oversampled: warmth saturation + lookahead limiter
     {
         juce::dsp::AudioBlock<float> block (buffer.getArrayOfWritePointers(), (size_t) numCh, (size_t) numSamples);
         auto os = oversampling->processSamplesUp (block);
@@ -305,7 +366,7 @@ void AuricMasterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         {
             if (i % factor == 0) warmthS.getNextValue();
             const float w = warmthS.getCurrentValue();
-            if (w <= 0.0001f) continue;
+            if (w <= 0.0001f || deltaListen) continue;
             const float k = 1.0f + 5.0f * w;
             const float norm = 1.0f / (k * slope0);
             for (int ch = 0; ch < numCh; ++ch)
@@ -318,7 +379,7 @@ void AuricMasterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
 
         const float ceilingGain = juce::Decibels::decibelsToGain (pCeiling->load());
-        limiter.setCeiling (ceilingGain * 0.955f); // 0.4 dB headroom for the downsampling filter
+        limiter.setCeiling (deltaListen ? 1.0f : ceilingGain * 0.955f); // 0.4 dB headroom for the downsampling filter
         float* chans[2] = { os.getChannelPointer (0), numCh > 1 ? os.getChannelPointer (1) : nullptr };
         limiter.process (chans, numCh, osN);
         limGainDb = juce::Decibels::gainToDecibels (limiter.getGainReduction());
@@ -330,11 +391,11 @@ void AuricMasterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             juce::FloatVectorOperations::clip (buffer.getWritePointer (ch), buffer.getReadPointer (ch), -ceilingGain, ceilingGain, numSamples);
     }
 
-    // 6) Output gain + dry/wet
+    // 7) Output gain + dry/wet
     for (int i = 0; i < numSamples; ++i)
     {
         const float g = outGainS.getNextValue();
-        const float mix = mixS.getNextValue();
+        const float mix = deltaListen ? 1.0f : mixS.getNextValue();
         for (int ch = 0; ch < numCh; ++ch)
         {
             auto* d = buffer.getWritePointer (ch);
