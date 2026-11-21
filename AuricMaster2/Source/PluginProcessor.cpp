@@ -49,6 +49,7 @@ AuricMaster2Processor::AuricMaster2Processor()
       apvts (*this, nullptr, "PARAMS", createLayout())
 {
     for (auto* id : ids) ptr.push_back (apvts.getRawParameterValue (id));
+    startTimerHz (10);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AuricMaster2Processor::createLayout()
@@ -84,7 +85,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AuricMaster2Processor::creat
         const auto n = String (b + 1), nm = String (eqName[b]);
         add (std::make_unique<AudioParameterFloat> (ParameterID { "eq" + n + "_freq", 1 }, nm + " Freq", freqR (20.0f, 20000.0f, 1000.0f), eqF[b], hz));
         add (std::make_unique<AudioParameterFloat> (ParameterID { "eq" + n + "_gain", 1 }, nm + " Gain", NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, dB));
-        add (std::make_unique<AudioParameterFloat> (ParameterID { "eq" + n + "_q", 1 }, nm + " Q", freqR (0.3f, 6.0f, 1.0f), b == 0 || b == 3 ? 0.7f : 1.0f));
+        add (std::make_unique<AudioParameterFloat> (ParameterID { "eq" + n + "_q", 1 }, nm + " Q", freqR (0.3f, 6.0f, 1.0f), b == 0 || b == 3 ? 0.7f : 1.0f,
+                                                    AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 2); })));
         add (std::make_unique<AudioParameterChoice> (ParameterID { "eq" + n + "_mode", 1 }, nm + " Mode", StringArray { "Stereo", "Mid", "Side" }, 0));
     }
 
@@ -175,6 +177,10 @@ void AuricMaster2Processor::prepareToPlay (double sampleRate, int samplesPerBloc
     for (auto& d : band) d = Dyn();
     glue = Dyn();
     glueSc.setHighPass (sr, 100.0, 0.707);
+    aLow.setLowPass (sr, 150.0, 0.707);
+    aLow.reset();
+    aHigh.setHighPass (sr, 300.0, 0.707);
+    aHigh.reset();
     excPre.setLowPass (sr, juce::jmin (9000.0, sr * 0.4), 0.707);
     excEnv = 0.0f;
     wMidS = wHighS = 1.0f;
@@ -204,7 +210,7 @@ void AuricMaster2Processor::processBlock (juce::AudioBuffer<float>& buffer, juce
 void AuricMaster2Processor::Dyn::compute (float amount, float knee, float levelC, float makeupC, float trimDb)
 {
     const float envDb = powerToDb (env);
-    if (envDb > -60.0f) levelDb += (envDb - levelDb) * levelC;
+    trackLevel (envDb, levelC);
     float gr = 0.0f;
     if (amount > 0.001f)
     {
@@ -237,11 +243,18 @@ void AuricMaster2Processor::updateControl (int numSamples)
             else
             {
                 const float err = t - outMeter.getRunning();
-                if (! autoJumped && outMeter.getMeasuredSeconds() > 3.0f)
+                if (! autoJumped)
                 {
-                    autoDrive += juce::jlimit (-12.0f, 12.0f, err);   // first estimate: jump close to the target
-                    autoJumped = true;
-                    holdoff = 3.5f;                                  // let the measurement catch up before fine-tuning
+                    // first estimate after 3 s of steady measurement: jump close to the target. The running
+                    // measurement is moved by the same amount, so the fine-tuning does not chase its own lag.
+                    if (outMeter.getMeasuredSeconds() > 3.0f)
+                    {
+                        const float jump = juce::jlimit (-12.0f, 12.0f, err);
+                        autoDrive += jump;
+                        outMeter.offsetRunning (jump);
+                        autoJumped = true;
+                        holdoff = 1.5f;
+                    }
                 }
                 else
                     autoDrive += juce::jlimit (-6.0f, 6.0f, err) * dt / 4.0f;
@@ -314,6 +327,22 @@ void AuricMaster2Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         for (int ch = 0; ch < chans; ++ch) main.getWritePointer (ch)[i] *= g;
     }
     inMeter.process (main, chans);
+
+    // assistant: collect stereo / low-end statistics of the incoming mix while it listens
+    if (assistCollect.load() && resonance.isLearning() && chans > 1)
+    {
+        const float* l = main.getReadPointer (0);
+        const float* r = main.getReadPointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            // correlation above ~300 Hz: that is the range the width controls act on (the bass is mono anyway)
+            const float hl = aHigh.process (l[i], 0), hr = aHigh.process (r[i], 1);
+            aLR += (double) hl * hr; aLL += (double) hl * hl; aRR += (double) hr * hr;
+            const float lm = aLow.process (0.5f * (l[i] + r[i]), 0), ls = aLow.process (0.5f * (l[i] - r[i]), 1);
+            aMlow += (double) lm * lm; aSlow += (double) ls * ls;
+            aPeak = juce::jmax (aPeak, std::abs (l[i]), std::abs (r[i]));
+        }
+    }
 
     for (int ch = 0; ch < chans; ++ch) dryBuffer.copyFrom (ch, 0, main, ch, 0, n);
     juce::AudioBuffer<float> dry (dryBuffer.getArrayOfWritePointers(), chans, 0, n);
@@ -390,7 +419,7 @@ void AuricMaster2Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         {
             // glue: gentler threshold/ratio than the bands, wide knee
             const float envDb = powerToDb (glue.env);
-            if (envDb > -60.0f) glue.levelDb += (envDb - glue.levelDb) * levelC;
+            glue.trackLevel (envDb, levelC);
             float gr = 0.0f;
             if (glueAmt > 0.001f)
             {
@@ -517,6 +546,8 @@ void AuricMaster2Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         float* chPtr[2] = { os.getChannelPointer (0), chans > 1 ? os.getChannelPointer (1) : nullptr };
         limiter.process (chPtr, chans, osN);
         grLimit.store (limiter.getGainReductionDb());
+        if (grLimit.load() < grLimitPeak.load()) grLimitPeak.store (grLimit.load());
+        if (grClip.load() < grClipPeak.load()) grClipPeak.store (grClip.load());
         oversampling->processSamplesDown (block);
     }
     tpGuard.process (main.getArrayOfWritePointers(), chans, n, ceilingLin * dbToGain (-0.05f));
@@ -548,6 +579,15 @@ void AuricMaster2Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         }
         const float den = std::sqrt (corrLL * corrRR);
         correlation.store (den > 1.0e-9f ? juce::jlimit (-1.0f, 1.0f, corrLR / den) : 1.0f);
+
+        int sp = scopePos.load (std::memory_order_relaxed);
+        for (int i = 0; i < n; i += 2)
+        {
+            scope[(size_t) (2 * sp)].store (l[i], std::memory_order_relaxed);
+            scope[(size_t) (2 * sp + 1)].store (r[i], std::memory_order_relaxed);
+            if (++sp >= scopeSize) sp = 0;
+        }
+        scopePos.store (sp, std::memory_order_release);
     }
 
     // ORIGINAL (bypass) and LEVEL MATCH. With level match on, the louder version is turned DOWN to the
@@ -575,6 +615,159 @@ void AuricMaster2Processor::processChunk (juce::AudioBuffer<float>& main, int ch
 }
 
 //==============================================================================
+void AuricMaster2Processor::startAssistant()
+{
+    aLR = aLL = aRR = aMlow = aSlow = 0.0;
+    aPeak = 0.0f;
+    inMeter.requestReset();
+    assistCollect.store (true);
+    resonance.requestLearn (assistSeconds);
+}
+
+void AuricMaster2Processor::timerCallback()
+{
+    if (resonance.consumeLearnResult())
+    {
+        assistCollect.store (false);
+        learnedFreqs = resonance.getBinFrequencies();
+        learnedPower = resonance.getLearnPower();
+        learnedActivity = resonance.getLearnActivity();
+        applyAssistant();
+    }
+}
+
+void AuricMaster2Processor::undoAssistant()
+{
+    if (! preAssistState.isValid()) return;
+    apvts.replaceState (preAssistState.createCopy());
+    preAssistState = {};
+    hasAutoResult = false;
+    assistSummary = {};
+}
+
+void AuricMaster2Processor::applyAssistant()
+{
+    if (learnedPower.empty()) return;
+    preAssistState = apvts.copyState();
+    using juce::String;
+    const int profile = (int) p (pAssistProfile);
+    std::array<float, numClashBands> defaults;
+    std::copy (std::begin (clashDefaultFreqs), std::end (clashDefaultFreqs), defaults.begin());
+    autoResult = AutoMatcher::analyse (learnedFreqs, learnedPower, learnedActivity, profile, defaults, clashNames);
+    // mastering: resonance bands stay subtle (the broad balance is handled by the EQ below)
+    {
+        juce::StringArray found;
+        for (int i = 0; i < numClashBands; ++i)
+        {
+            auto& b = autoResult.bands[(size_t) i];
+            b.amount = juce::jlimit (-60.0f, 80.0f, b.amount);
+            if (std::abs (b.amount) >= 10.0f)
+                found.add (String (clashNames[i]) + " " + (b.freq >= 1000.0f ? String (b.freq / 1000.0f, 1) + " kHz" : String (juce::roundToInt (b.freq)) + " Hz")
+                           + " " + (b.amount > 0 ? "+" : "") + String (juce::roundToInt (b.amount)) + "%");
+        }
+        autoResult.depth = juce::jlimit (20.0f, 50.0f, autoResult.depth);
+        autoResult.summary = found.isEmpty() ? String ("keine deutlichen Resonanzen gefunden") : found.joinIntoString (String::fromUTF8 ("  \xc2\xb7  "));
+    }
+
+    // broad tonal balance vs. the genre reference (1/3 octave, aligned on 100 Hz..10 kHz, ~2/3 octave smoothing)
+    constexpr int nb = 31;
+    std::array<float, nb> fc {}, dev {};
+    const double binHz = learnedFreqs.size() > 1 ? (double) learnedFreqs[1] : 1.0;
+    const auto targetPow = AutoMatcher::targetBinPower (learnedFreqs, profile);   // same bins, same window
+    for (int i = 0; i < nb; ++i)
+    {
+        fc[(size_t) i] = 20.0f * std::pow (2.0f, (float) i / 3.0f);
+        const int lo = juce::jlimit (1, (int) learnedPower.size() - 1, (int) std::round (fc[(size_t) i] * 0.891f / binHz));
+        const int hi = juce::jlimit (lo, (int) learnedPower.size() - 1, (int) std::round (fc[(size_t) i] * 1.122f / binHz));
+        double s = 0.0, t = 0.0;
+        for (int b = lo; b <= hi; ++b) { s += learnedPower[(size_t) b]; t += targetPow[(size_t) b]; }
+        dev[(size_t) i] = (float) (10.0 * std::log10 ((s + 1.0e-20) / (t + 1.0e-20)));
+    }
+    std::array<float, nb> core {};
+    int nc = 0;
+    for (int i = 0; i < nb; ++i) if (fc[(size_t) i] >= 100.0f && fc[(size_t) i] <= 10000.0f) core[(size_t) nc++] = dev[(size_t) i];
+    std::sort (core.begin(), core.begin() + nc);
+    const float offset = core[(size_t) nc / 2];
+    for (auto& d : dev) d -= offset;
+    auto avgDev = [&] (float f1, float f2)
+    {
+        float s = 0.0f; int k = 0;
+        for (int i = 0; i < nb; ++i) if (fc[(size_t) i] >= f1 && fc[(size_t) i] <= f2) { s += dev[(size_t) i]; ++k; }
+        return k > 0 ? s / (float) k : 0.0f;
+    };
+
+    auto set = [this] (const char* id, float value)
+    {
+        if (auto* prm = apvts.getParameter (id))
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 (value));
+            prm->endChangeGesture();
+        }
+    };
+    auto round1 = [] (float v) { return std::round (v * 10.0f) / 10.0f; };
+
+    // EQ: correct about 60 % of the broad deviation, at most +-4 dB (taste stays with the mix)
+    const float eqLow = round1 (juce::jlimit (-4.0f, 4.0f, -0.6f * avgDev (40.0f, 120.0f)));
+    const float eqLowMid = round1 (juce::jlimit (-4.0f, 4.0f, -0.6f * avgDev (200.0f, 500.0f)));
+    const float eqHighMid = round1 (juce::jlimit (-4.0f, 4.0f, -0.6f * avgDev (2000.0f, 5000.0f)));
+    const float eqHigh = round1 (juce::jlimit (-4.0f, 4.0f, -0.6f * avgDev (9000.0f, 16000.0f)));
+    // bands at the positions that were measured: shelf 80 Hz, bells 300 Hz / 3 kHz, shelf 12 kHz
+    set ("eq1_freq", 80.0f);    set ("eq1_q", 0.7f); set ("eq1_gain", eqLow);
+    set ("eq2_freq", 300.0f);   set ("eq2_q", 1.0f); set ("eq2_gain", eqLowMid);
+    set ("eq3_freq", 3000.0f);  set ("eq3_q", 1.0f); set ("eq3_gain", eqHighMid);
+    set ("eq4_freq", 12000.0f); set ("eq4_q", 0.7f); set ("eq4_gain", eqHigh);
+    for (auto* id : { "eq1_mode", "eq2_mode", "eq3_mode", "eq4_mode" }) set (id, 0.0f);
+
+    // dynamics from the peak-to-loudness ratio: an open mix gets more, an already squashed one little
+    const float integratedIn = inMeter.getIntegrated();
+    const float plr = juce::jlimit (0.0f, 30.0f, 20.0f * std::log10 (aPeak + 1.0e-9f) - integratedIn);
+    const float base = juce::jlimit (0.1f, 0.8f, (plr - 8.0f) / 12.0f);
+    set ("mb_low", std::round (60.0f * base)); set ("mb_mid", std::round (45.0f * base)); set ("mb_high", std::round (45.0f * base));
+    set ("glue", std::round (50.0f * base + (inMeter.getLra() > 10.0f ? 10.0f : 0.0f)));
+    set ("punch", 50.0f);
+
+    // width from the correlation (mono safety first), mono bass from the low-end side content
+    const double den = std::sqrt (aLL * aRR);
+    const float corr = den > 1.0e-12 ? (float) (aLR / den) : 1.0f;
+    float wMid = 100.0f, wHigh = 110.0f;
+    if (corr < 0.3f)       { wMid = 85.0f;  wHigh = 95.0f; }
+    else if (corr > 0.85f) { wMid = 110.0f; wHigh = 125.0f; }
+    set ("width_mid", wMid); set ("width_high", wHigh); set ("width", 100.0f);
+    const float sideLow = (float) (aSlow / (aMlow + 1.0e-12));
+    const float mono = sideLow > 0.1f ? 150.0f : 100.0f;
+    set ("mono_freq", mono);
+
+    // colour and limiter character
+    set ("sat_low", plr > 12.0f ? 25.0f : 10.0f);
+    set ("sat_high", avgDev (8000.0f, 14000.0f) < -2.0f ? 30.0f : 15.0f);
+    set ("lim_mode", plr > 14.0f ? 1.0f : 0.0f);
+    if ((int) p (pTarget) == 0) set ("target", 1.0f);
+
+    // resonances (clash bands + depth from the spectral analysis)
+    for (int i = 0; i < numClashBands; ++i)
+    {
+        const auto n = "clash" + String (i + 1);
+        const auto& b = autoResult.bands[(size_t) i];
+        set ((n + "_freq").toRawUTF8(), b.freq);
+        set ((n + "_amt").toRawUTF8(), b.amount);
+        set ((n + "_width").toRawUTF8(), b.width);
+    }
+    set ("res_depth", autoResult.depth);
+    set ("res_on", 1.0f);
+
+    auto sgn = [] (float v) { return (v > 0.04f ? "+" : "") + String (v, 1); };
+    const auto dot = String::fromUTF8 ("  \xc2\xb7  ");
+    assistSummary = "EQ " + sgn (eqLow) + " / " + sgn (eqLowMid) + " / " + sgn (eqHighMid) + " / " + sgn (eqHigh) + " dB" + dot
+                  + "Dynamik " + String (juce::roundToInt (100.0f * base)) + " %" + dot
+                  + "Breite " + String (juce::roundToInt (wMid)) + "/" + String (juce::roundToInt (wHigh)) + " %" + dot
+                  + "Mono-Bass " + String (juce::roundToInt (mono)) + " Hz" + dot
+                  + "PLR " + String (plr, 1) + " dB, Korrelation " + String (corr, 2);
+    hasAutoResult = true;
+    autoResultTime = juce::Time::getMillisecondCounter();
+    ++assistRuns;
+}
+
 void AuricMaster2Processor::selectSnapshot (int slot)
 {
     slot = juce::jlimit (0, 3, slot);
@@ -603,6 +796,8 @@ void AuricMaster2Processor::getStateInformation (juce::MemoryBlock& destData)
         snaps.appendChild (slot, nullptr);
     }
     state.appendChild (snaps, nullptr);
+    state.setProperty ("uiWidth", uiWidth.load(), nullptr);
+    state.setProperty ("uiPage", uiPage.load(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -612,6 +807,10 @@ void AuricMaster2Processor::setStateInformation (const void* data, int sizeInByt
     auto xml = getXmlFromBinary (data, sizeInBytes);
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType())) return;
     auto state = juce::ValueTree::fromXml (*xml);
+    uiWidth.store ((int) state.getProperty ("uiWidth", 0));
+    uiPage.store ((int) state.getProperty ("uiPage", 0));
+    state.removeProperty ("uiWidth", nullptr);
+    state.removeProperty ("uiPage", nullptr);
     auto snaps = state.getChildWithName ("Snapshots");
     for (auto& s : snapshots) s = {};
     if (snaps.isValid())

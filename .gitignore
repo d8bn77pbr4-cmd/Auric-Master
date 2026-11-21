@@ -4,3 +4,4 @@ JUCE/
 AuricMaster2/JUCE
 AuricMaster2/build/
 AuricMaster2/build-*/
+AuricMaster2/*.log

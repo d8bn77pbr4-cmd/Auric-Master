@@ -49,6 +49,15 @@ struct Biquad
     }
     void setRaw (double nb0, double nb1, double nb2, double na1, double na2) { set (nb0, nb1, nb2, 1.0, na1, na2); }
 
+    // magnitude response in dB at frequency f (for displays)
+    double magnitudeDb (double fs, double f) const
+    {
+        const double w = juce::MathConstants<double>::twoPi * f / fs, c1 = std::cos (w), c2 = std::cos (2 * w), s1 = std::sin (w), s2 = std::sin (2 * w);
+        const double nr = b0 + b1 * c1 + b2 * c2, ni = -(b1 * s1 + b2 * s2);
+        const double dr = 1.0 + a1 * c1 + a2 * c2, di = -(a1 * s1 + a2 * s2);
+        return 10.0 * std::log10 ((nr * nr + ni * ni) / (dr * dr + di * di) + 1.0e-30);
+    }
+
     float process (float x, int ch)
     {
         auto& s = state[(size_t) ch];

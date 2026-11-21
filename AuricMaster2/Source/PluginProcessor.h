@@ -15,11 +15,11 @@ namespace Targets
     inline float lufs (int index) { const float v[] = { 0.0f, -14.0f, -16.0f, -11.0f, -9.0f, -7.0f }; return v[juce::jlimit (0, 5, index)]; }
 }
 
-class AuricMaster2Processor : public juce::AudioProcessor
+class AuricMaster2Processor : public juce::AudioProcessor, private juce::Timer
 {
 public:
     AuricMaster2Processor();
-    ~AuricMaster2Processor() override = default;
+    ~AuricMaster2Processor() override { stopTimer(); }
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -53,12 +53,33 @@ public:
     int getActiveSnapshot() const { return activeSnapshot; }
     bool snapshotUsed (int slot) const { return snapshots[(size_t) slot].isValid(); }
 
+    // ---- Auto-Master assistant: listens 15 s, then sets EQ, dynamics, width, mono bass, colour, resonance ----
+    static constexpr float assistSeconds = 15.0f;
+    void startAssistant();
+    bool isAutoLearning() const { return resonance.isLearning(); }
+    float getAutoProgress() const { return resonance.getLearnProgress(); }
+    const AutoMatcher::Result* getAutoResult() const { return hasAutoResult ? &autoResult : nullptr; }
+    juce::uint32 getAutoResultTime() const { return autoResultTime; }
+    juce::String getAssistSummary() const { return assistSummary; }
+    bool canUndoAssistant() const { return preAssistState.isValid(); }
+    int getAssistRuns() const { return assistRuns; }
+    void undoAssistant();
+
     // ---- metering / display (read by the editor) ----
     LoudnessMeter inMeter, outMeter;
     ResonanceSuppressor resonance;
     std::atomic<float> grLow { 0.0f }, grMid { 0.0f }, grHigh { 0.0f }, grGlue { 0.0f }, grClip { 0.0f }, grLimit { 0.0f };
     std::atomic<float> driveDb { 0.0f }, correlation { 1.0f }, compareGainDb { 0.0f };
+    std::atomic<float> grLimitPeak { 0.0f }, grClipPeak { 0.0f };   // peak since the editor last read them (exchange)
     std::atomic<bool> targetReached { false };
+
+    // vectorscope: recent output samples (L, R pairs, every 2nd sample); visual only
+    static constexpr int scopeSize = 1024;
+    std::array<std::atomic<float>, scopeSize * 2> scope {};
+    std::atomic<int> scopePos { 0 };
+
+    // editor size and page, stored with the project
+    std::atomic<int> uiWidth { 0 }, uiPage { 0 };
 
     static constexpr const char* clashNames[numClashBands] = { "LOW", "MUD", "BOX", "HARSH", "SIBILANCE", "HIGH" };
     static constexpr float clashDefaultFreqs[numClashBands] = { 80.0f, 250.0f, 600.0f, 3000.0f, 7500.0f, 12000.0f };
@@ -66,6 +87,23 @@ public:
                                                        ClashNode::bell, ClashNode::bell, ClashNode::highShelf };
 
 private:
+    void timerCallback() override;
+    void applyAssistant();
+
+    bool hasAutoResult = false;
+    AutoMatcher::Result autoResult;
+    juce::uint32 autoResultTime = 0;
+    juce::String assistSummary;
+    juce::ValueTree preAssistState;
+    int assistRuns = 0;
+    std::vector<float> learnedFreqs;
+    std::vector<double> learnedPower, learnedActivity;
+    // input statistics while the assistant listens (audio thread writes; read after the learning ended)
+    std::atomic<bool> assistCollect { false };
+    double aLR = 0.0, aLL = 0.0, aRR = 0.0, aMlow = 0.0, aSlow = 0.0;
+    float aPeak = 0.0f;
+    Biquad aLow, aHigh;
+
     void processChunk (juce::AudioBuffer<float>& main, int chans);
     void updateControl (int numSamples);
     float p (int id) const { return ptr[(size_t) id]->load(); }
@@ -75,7 +113,16 @@ private:
     {
         float env = 0.0f, levelDb = -40.0f, gain = 1.0f, target = 1.0f, makeupDb = 0.0f, grDb = 0.0f;
         float attC = 0.0f, relC = 0.0f, outGain = 1.0f;
+        int levelBlocks = 0;   // blocks with signal so far: the level estimate starts as a plain running mean
         void detect (float p) { env = p > env ? p + (env - p) * attC : p + (env - p) * relC; }
+        void trackLevel (float envDb, float levelC)
+        {
+            if (envDb <= -60.0f) return;
+            // running mean at the start (no assumed level -> no surge when playback starts), exponential later
+            const float c = juce::jmax (levelC, 1.0f / (float) (++levelBlocks));
+            levelDb += (envDb - levelDb) * c;
+            if (levelBlocks > 1 << 20) levelBlocks = 1 << 20;
+        }
         void compute (float amount, float knee, float levelC, float makeupC, float trimDb);
     };
 

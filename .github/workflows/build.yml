@@ -38,3 +38,38 @@ jobs:
         with:
           name: AuricMaster-macOS
           path: AuricMaster-macOS.zip
+
+  # ---------------- Auric Master 2 ----------------
+  am2-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S AuricMaster2 -B build-am2 -A x64
+      - name: Build
+        run: cmake --build build-am2 --config Release --target AuricMaster2_VST3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuricMaster2-VST3-Windows
+          path: build-am2/AuricMaster2_artefacts/Release/VST3/
+
+  am2-macos:
+    runs-on: macos-15-intel   # Apple-Silicon runners are often at capacity; this one still builds a universal (arm64 + x86_64) plugin
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Configure (Universal: Apple Silicon + Intel)"
+        run: cmake -S AuricMaster2 -B build-am2 -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+      - name: Build
+        run: cmake --build build-am2 --config Release --target AuricMaster2_VST3 AuricMaster2_AU
+      - name: Ad-hoc sign and package
+        run: |
+          mkdir -p dist
+          cp -R "build-am2/AuricMaster2_artefacts/Release/VST3/Auric Master 2.vst3" dist/
+          cp -R "build-am2/AuricMaster2_artefacts/Release/AU/Auric Master 2.component" dist/
+          codesign --force --deep --sign - "dist/Auric Master 2.vst3"
+          codesign --force --deep --sign - "dist/Auric Master 2.component"
+          ditto -c -k --keepParent dist AuricMaster2-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuricMaster2-macOS
+          path: AuricMaster2-macOS.zip

@@ -234,6 +234,13 @@ void LoudnessMeter::endSubBlock()
     historyPos.store (hp);
 }
 
+void LoudnessMeter::offsetRunning (float db)
+{
+    if (! runningValid.load()) return;
+    runEnergy *= std::pow (10.0, 0.1 * db);
+    running.store (running.load() + db);
+}
+
 void LoudnessMeter::copyHistory (std::array<float, historySize>& out, int& newest) const
 {
     newest = historyPos.load();

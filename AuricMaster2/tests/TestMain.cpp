@@ -99,6 +99,71 @@ namespace
         }
     }
 
+    // stereo noise with the long-term spectrum of an assistant genre target (plus an optional extra curve);
+    // the side signal only exists above 200 Hz, so the low end is mono like in a real master
+    void shapedNoise (std::vector<float>& l, std::vector<float>& r, double fs, float rmsDbfs, int profile,
+                      std::function<float (float)> extraDb, float side, unsigned seed, float sideLowCut = 200.0f)
+    {
+        constexpr int order = 20;
+        const int N = 1 << order;
+        juce::dsp::FFT fft (order);
+        juce::Random rng ((juce::int64) seed);
+        auto make = [&] (bool sideSignal)
+        {
+            std::vector<float> d ((size_t) 2 * (size_t) N, 0.0f);
+            for (int k = 1; k < N / 2; ++k)
+            {
+                const float f = (float) (k * fs / N);
+                if (sideSignal && f < sideLowCut) continue;
+                const float db = AutoMatcher::targetDb (f, profile) + (extraDb ? extraDb (f) : 0.0f);
+                const float mag = std::pow (10.0f, db / 20.0f), ph = rng.nextFloat() * (float) twoPi;
+                d[(size_t) (2 * k)] = mag * std::cos (ph);
+                d[(size_t) (2 * k + 1)] = mag * std::sin (ph);
+            }
+            fft.performRealOnlyInverseTransform (d.data());
+            d.resize ((size_t) N);
+            return d;
+        };
+        auto c = make (false), s = make (true);
+        double e = 0.0;
+        for (float v : c) e += (double) v * v;
+        const float g = std::pow (10.0f, rmsDbfs / 20.0f) / (float) std::sqrt (e / N);
+        l.resize ((size_t) N); r.resize ((size_t) N);
+        for (size_t i = 0; i < (size_t) N; ++i) { l[i] = g * (c[i] + side * s[i]); r[i] = g * (c[i] - side * s[i]); }
+    }
+
+    // starts the assistant, plays the material until it has listened, then lets its timer apply the result
+    bool runAssistant (AuricMaster2Processor& p, const std::vector<float>& l, const std::vector<float>& r)
+    {
+        const int runsBefore = p.getAssistRuns();
+        p.startAssistant();
+        juce::AudioBuffer<float> buf (2, block);
+        juce::MidiBuffer m;
+        size_t cursor = 0;
+        for (int k = 0; k < 6000 && p.isAutoLearning(); ++k)
+        {
+            if (cursor + block > l.size()) cursor = 0;
+            for (int i = 0; i < block; ++i) { buf.setSample (0, i, l[cursor + (size_t) i]); buf.setSample (1, i, r[cursor + (size_t) i]); }
+            p.processBlock (buf, m);
+            cursor += block;
+        }
+        for (int k = 0; k < 100 && p.getAssistRuns() == runsBefore; ++k)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        return p.getAssistRuns() > runsBefore;
+    }
+
+    float val (AuricMaster2Processor& p, const char* id) { return p.apvts.getRawParameterValue (id)->load(); }
+
+    void printAssist (const char* name, AuricMaster2Processor& p, bool ok)
+    {
+        std::printf ("[assistant %-9s] %s EQ %+.1f / %+.1f / %+.1f / %+.1f dB | multiband %.0f/%.0f/%.0f glue %.0f | width %.0f/%.0f | mono %.0f Hz | "
+                     "limiter %d | res depth %.0f\n      %s\n      resonance: %s\n",
+                     name, ok ? "" : "(NO RESULT)", val (p, "eq1_gain"), val (p, "eq2_gain"), val (p, "eq3_gain"), val (p, "eq4_gain"),
+                     val (p, "mb_low"), val (p, "mb_mid"), val (p, "mb_high"), val (p, "glue"), val (p, "width_mid"), val (p, "width_high"),
+                     val (p, "mono_freq"), (int) val (p, "lim_mode"), val (p, "res_depth"),
+                     p.getAssistSummary().toRawUTF8(), p.getAutoResult() != nullptr ? p.getAutoResult()->summary.toRawUTF8() : "-");
+    }
+
     double rmsDb (const std::vector<float>& x, size_t a, size_t b)
     {
         double s = 0.0;
@@ -110,6 +175,59 @@ namespace
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
+
+    // screenshot mode: AM2Tests --shots <dir>  renders every page with music running through the plugin
+    if (argc >= 3 && juce::String (argv[1]) == "--shots")
+    {
+        const juce::File dir (juce::File::getCurrentWorkingDirectory().getChildFile (argv[2]));
+        dir.createDirectory();
+        auto p = makeProc();
+        // material: the synthetic band plus noise with a typical master balance (fills the spectrum like a real mix)
+        std::vector<float> l, r, nl, nr;
+        shapedNoise (nl, nr, 48000.0, -24.0f, AutoMatcher::pop, nullptr, 0.5f, 21);
+        music (l, r, 48000.0, (double) nl.size() / 48000.0, 0.06f, 7);
+        for (size_t i = 0; i < l.size(); ++i) { l[i] += nl[i]; r[i] += nr[i]; }
+        size_t cursor = 0;
+        auto feed = [&] (double seconds)
+        {
+            juce::AudioBuffer<float> buf (2, block);
+            juce::MidiBuffer m;
+            const size_t total = (size_t) (seconds * 48000.0);
+            for (size_t done = 0; done + block <= total; done += block)
+            {
+                if (cursor + block > l.size()) cursor = 0;
+                for (int i = 0; i < block; ++i) { buf.setSample (0, i, l[cursor + (size_t) i]); buf.setSample (1, i, r[cursor + (size_t) i]); }
+                p->processBlock (buf, m);
+                cursor += block;
+            }
+        };
+        if (argc >= 4 && juce::String (argv[3]) == "assist")
+        {
+            p->startAssistant();
+            for (int k = 0; k < 170 && (p->isAutoLearning() || p->getAutoResult() == nullptr); ++k)
+            {
+                feed (0.1);
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+            }
+        }
+        feed (20.0);
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+        auto* e = dynamic_cast<AuricMaster2Editor*> (ed.get());
+        e->setSize (MainView::designWidth, MainView::designHeight);
+        const char* names[] = { "simple", "eq", "dynamics", "stereo", "limiter", "resonance" };
+        for (int pg = 0; pg < MainView::numPages; ++pg)
+        {
+            e->getView().showPage (pg);
+            for (int k = 0; k < 90; ++k) { feed (1.0 / 30.0); e->getView().tick (k); }
+            auto img = e->createComponentSnapshot (e->getLocalBounds(), true, 1.0f);
+            juce::FileOutputStream out (dir.getChildFile (juce::String (names[pg]) + ".png"));
+            out.setPosition (0); out.truncate();
+            juce::PNGImageFormat().writeImageToStream (img, out);
+        }
+        std::printf ("screenshots written to %s\n", dir.getFullPathName().toRawUTF8());
+        if (p->getAutoResult() != nullptr) std::printf ("assistant: %s\n", p->getAssistSummary().toRawUTF8());
+        return 0;
+    }
 
     // 1) K-weighting at 48 kHz vs. the coefficients published in ITU-R BS.1770
     {
@@ -313,6 +431,83 @@ int main (int argc, char** argv)
         const double t0 = juce::Time::getMillisecondCounterHiRes();
         run (*p, l, r);
         std::printf ("[cpu] %.1f %% of one core (48 kHz, all modules on)\n", 100.0 * (juce::Time::getMillisecondCounterHiRes() - t0) / 20000.0);
+    }
+
+    // 12b) start of playback with a loudness target: no loudness surge while everything settles
+    {
+        auto p = makeProc();
+        std::vector<float> l, r, nl, nr;
+        shapedNoise (nl, nr, 48000.0, -24.0f, AutoMatcher::pop, nullptr, 0.5f, 21);
+        music (l, r, 48000.0, (double) nl.size() / 48000.0, 0.06f, 7);
+        for (size_t i = 0; i < l.size(); ++i) { l[i] += nl[i]; r[i] += nr[i]; }
+        juce::AudioBuffer<float> buf (2, block);
+        juce::MidiBuffer m;
+        float stMax = -100.0f, stAt20 = -100.0f;
+        for (size_t s = 0; s + block <= l.size(); s += block)
+        {
+            for (int i = 0; i < block; ++i) { buf.setSample (0, i, l[s + (size_t) i]); buf.setSample (1, i, r[s + (size_t) i]); }
+            p->processBlock (buf, m);
+            const double t = (double) s / 48000.0;
+            if (t > 3.0) stMax = juce::jmax (stMax, p->outMeter.getShortTerm());
+            if (t < 20.0) stAt20 = p->outMeter.getShortTerm();
+            if (std::getenv ("AM2_TRACE") && (s / block) % 47 == 0 && t < 20.0)
+                std::printf ("  t %5.1f  st %6.2f  run %6.2f  mom %6.2f  drive %5.2f  gr %5.2f %5.2f %5.2f glue %5.2f lim %5.2f in %6.2f\n", t, p->outMeter.getShortTerm(),
+                             p->outMeter.getRunning(), p->outMeter.getMomentary(), p->driveDb.load(), p->grLow.load(), p->grMid.load(), p->grHigh.load(), p->grGlue.load(), p->grLimit.load(), p->inMeter.getShortTerm());
+        }
+        std::printf ("[start-up] target -14 LUFS: short-term max after 3 s %.2f LUFS, at 20 s %.2f LUFS, integrated %.2f LUFS\n",
+                     stMax, stAt20, p->outMeter.getIntegrated());
+    }
+
+    // 13) Auto-Master assistant on material with a known tonal balance
+    {
+        const double fs = 48000.0;
+        auto shelfDb = [fs] (bool high, float freq, float gainDb)
+        {
+            return [=] (float f)
+            {
+                Biquad b;
+                if (high) b.setHighShelf (fs, freq, 0.7, gainDb); else b.setLowShelf (fs, freq, 0.7, gainDb);
+                return (float) b.magnitudeDb (fs, f);
+            };
+        };
+        std::vector<float> l, r;
+
+        shapedNoise (l, r, fs, -20.0f, AutoMatcher::pop, nullptr, 0.4f, 11);
+        auto neutralP = makeProc();
+        const bool ok1 = runAssistant (*neutralP, l, r);
+        printAssist ("neutral", *neutralP, ok1);
+        const float neutralMb = val (*neutralP, "mb_low");
+
+        // the same material hard-limited: little dynamics left -> the assistant should compress less
+        auto ls = l, rs = r;
+        for (size_t i = 0; i < ls.size(); ++i) { ls[i] = std::tanh (5.0f * ls[i]) * 0.2f; rs[i] = std::tanh (5.0f * rs[i]) * 0.2f; }
+        auto squashedP = makeProc();
+        const bool ok2 = runAssistant (*squashedP, ls, rs);
+        printAssist ("squashed", *squashedP, ok2);
+        std::printf ("      multiband low: neutral %.0f vs squashed %.0f (expected: squashed lower)\n", neutralMb, val (*squashedP, "mb_low"));
+
+        shapedNoise (l, r, fs, -20.0f, AutoMatcher::pop, shelfDb (false, 100.0f, 6.0f), 0.4f, 12);
+        auto bassP = makeProc();
+        const bool ok3 = runAssistant (*bassP, l, r);
+        printAssist ("bass +6dB", *bassP, ok3);
+        const float firstLow = val (*bassP, "eq1_gain");
+        setP (*bassP, "eq1_gain", 2.0f);   // the user changes something, then asks again
+        const bool ok4 = runAssistant (*bassP, l, r);
+        std::printf ("      second run on the same mix: low shelf %+.1f dB (first %+.1f, expected equal: analysis is before the EQ)\n",
+                     val (*bassP, "eq1_gain"), firstLow);
+        bassP->undoAssistant();
+        std::printf ("      undo: low shelf %+.1f dB (expected +2.0, the user's value before the 2nd run)%s\n", val (*bassP, "eq1_gain"), ok4 ? "" : " (NO RESULT)");
+
+        shapedNoise (l, r, fs, -20.0f, AutoMatcher::pop, shelfDb (true, 8000.0f, -6.0f), 0.4f, 13);
+        auto dullP = makeProc();
+        const bool ok5 = runAssistant (*dullP, l, r);
+        printAssist ("dull -6dB", *dullP, ok5);
+
+        // very wide mix, also wide in the bass: narrower width, mono bass higher
+        shapedNoise (l, r, fs, -20.0f, AutoMatcher::pop, nullptr, 0.85f, 14, 20.0f);
+        auto wideP = makeProc();
+        const bool ok6 = runAssistant (*wideP, l, r);
+        printAssist ("wide", *wideP, ok6);
     }
 
     juce::ignoreUnused (argc, argv);

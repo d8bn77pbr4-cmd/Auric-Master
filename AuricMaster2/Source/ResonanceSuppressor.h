@@ -87,7 +87,7 @@ private:
     std::unique_ptr<juce::dsp::FFT> fft;
     std::vector<float> window;
     std::vector<std::vector<float>> inRing, outRing, fftData;
-    std::vector<float> magDb, ref1, ref2, grDb, grSmooth, grTmp, weights, binFreq;
+    std::vector<float> magDb, ref1, ref2, grDb, grSmooth, grTmp, weights, binFreq, powAvg;
     std::vector<double> prefix;
     Settings settings;
     ClashNodes cachedNodes;

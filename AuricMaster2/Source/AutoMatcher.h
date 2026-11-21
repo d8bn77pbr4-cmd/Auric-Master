@@ -19,8 +19,12 @@ namespace AutoMatcher
         juce::String summary;
     };
 
-    // Target level in dB relative to 1 kHz
+    // Target level in dB relative to 1 kHz (power density per FFT bin; masters roll off below ~22 Hz)
     float targetDb (float freq, int profile);
+
+    // The target as the analysis FFT (Hann window) would measure it in each bin: the window's leakage
+    // mixes neighbouring frequencies, which matters at the coarse low bins. Compare like with like.
+    std::vector<double> targetBinPower (const std::vector<float>& binFreq, int profile);
 
     Result analyse (const std::vector<float>& binFreq, const std::vector<double>& power,
                     const std::vector<double>& activity, int profile,

@@ -1,5 +1,7 @@
 # Auric Master – VST3 Mixbus/Mastering-Plugin
 
+> **Neu: [Auric Master 2](AuricMaster2/README.md)** – komplett neu aufgebaute Mastering-Suite (Einfach- + Profi-Seiten, BS.1770-Lautheitsmessung, Lautheitsziel-Automatik, Auto-Master-Assistent). Diese Seite beschreibt die erste Version, die unverändert bleibt.
+
 All-in-one-Mastering-Kette: **Input → Tone (Bass/Air) → Resonance Control (Frequenz-Clashes) → Glue-Kompressor (Punch) → Stereobreite → Röhren-Sättigung (Warmth) → Lookahead-Limiter (4× Oversampling) → Output/Mix**.
 
 | Regler  | Funktion |

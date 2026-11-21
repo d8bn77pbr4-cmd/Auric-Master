@@ -28,7 +28,9 @@ set(AM2_SOURCES
     Source/LoudnessMeter.cpp
     Source/Limiter.cpp
     Source/ResonanceSuppressor.cpp
-    Source/AutoMatcher.cpp)
+    Source/AutoMatcher.cpp
+    Source/Theme.cpp
+    Source/ClashDisplay.cpp)
 
 juce_add_plugin(AuricMaster2
     COMPANY_NAME "AuricAudio"

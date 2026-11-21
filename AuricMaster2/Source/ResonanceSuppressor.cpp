@@ -25,7 +25,7 @@ void ResonanceSuppressor::prepare (double sampleRate, int numChannels)
     fftData.assign ((size_t) numCh, std::vector<float> ((size_t) fftSize * 2, 0.0f));
 
     const size_t bins = (size_t) fftSize / 2 + 1;
-    for (auto* v : { &magDb, &ref1, &ref2, &grDb, &grSmooth, &grTmp, &weights, &binFreq })
+    for (auto* v : { &magDb, &ref1, &ref2, &grDb, &grSmooth, &grTmp, &weights, &binFreq, &powAvg })
         v->assign (bins, 0.0f);
     prefix.assign (bins + 1, 0.0);
     learnPower.assign (bins, 0.0);
@@ -146,13 +146,16 @@ void ResonanceSuppressor::processFrame()
     float frameMax = -200.0f;
     for (int b = 0; b < bins; ++b)
     {
-        float m = 0.0f;
+        float m = 0.0f, pw = 0.0f;
         for (int ch = 0; ch < numCh; ++ch)
         {
             const auto& d = fftData[(size_t) ch];
-            m = juce::jmax (m, std::hypot (d[(size_t) (2 * b)], d[(size_t) (2 * b + 1)]));
+            const float re = d[(size_t) (2 * b)], im = d[(size_t) (2 * b + 1)];
+            m = juce::jmax (m, std::hypot (re, im));
+            pw += re * re + im * im;
         }
         magDb[(size_t) b] = 20.0f * std::log10 (m * ampNorm + 1.0e-9f);
+        powAvg[(size_t) b] = pw / (float) numCh * ampNorm * ampNorm;   // channel average (unbiased for wide content)
         if (b > 0) frameMax = juce::jmax (frameMax, magDb[(size_t) b]);
     }
 
@@ -182,7 +185,7 @@ void ResonanceSuppressor::processFrame()
     {
         for (int b = 1; b < bins; ++b)
         {
-            learnPower[(size_t) b] += std::pow (10.0, magDb[(size_t) b] * 0.1);
+            learnPower[(size_t) b] += (double) powAvg[(size_t) b];
             learnActivity[(size_t) b] += juce::jlimit (0.0f, 20.0f, magDb[(size_t) b] - ref2[(size_t) b]);
         }
         ++learnFrames;

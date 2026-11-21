@@ -62,7 +62,40 @@ float targetDb (float freq, int profile)
     float db = p.slope * o;
     db += p.lowBoost / (1.0f + std::pow (freq / p.lowFreq, 2.0f));
     db += p.highShelf / (1.0f + std::pow (p.highFreq / freq, 2.0f));
+    db -= 10.0f * std::log10 (1.0f + std::pow (22.0f / juce::jmax (0.01f, freq), 8.0f));   // sub-sonic roll-off
     return db;
+}
+
+std::vector<double> targetBinPower (const std::vector<float>& binFreq, int profile)
+{
+    const size_t n = binFreq.size();
+    std::vector<double> out (n, 0.0);
+    if (n < 2) return out;
+    const double binHz = binFreq[1];
+    // squared Hann-window kernel |W(d)|^2 (d in bins), integrated over +-4 bins
+    constexpr int steps = 160;
+    std::array<double, steps + 1> kernel {};
+    for (int s = 0; s <= steps; ++s)
+    {
+        const double d = -4.0 + 8.0 * s / steps;
+        double w;
+        if (std::abs (d) < 1.0e-9) w = 1.0;
+        else if (std::abs (std::abs (d) - 1.0) < 1.0e-9) w = 0.5;
+        else w = std::sin (juce::MathConstants<double>::pi * d) / (juce::MathConstants<double>::pi * d * (1.0 - d * d));
+        kernel[(size_t) s] = w * w;
+    }
+    for (size_t b = 1; b < n; ++b)
+    {
+        double sum = 0.0, wsum = 0.0;
+        for (int s = 0; s <= steps; ++s)
+        {
+            const double f = ((double) b - 4.0 + 8.0 * s / steps) * binHz;
+            wsum += kernel[(size_t) s];
+            if (f > 0.5) sum += kernel[(size_t) s] * std::pow (10.0, 0.1 * targetDb ((float) f, profile));
+        }
+        out[b] = sum / wsum;
+    }
+    return out;
 }
 
 Result analyse (const std::vector<float>& binFreq, const std::vector<double>& power,
@@ -71,24 +104,27 @@ Result analyse (const std::vector<float>& binFreq, const std::vector<double>& po
 {
     Result r;
 
-    // 1) learned spectrum + resonance activity on a 1/24-octave grid
-    std::vector<float> mixDb ((size_t) gridPoints), act ((size_t) gridPoints), dev ((size_t) gridPoints);
+    // 1) learned spectrum + resonance activity on a 1/24-octave grid; the target measured the same way
+    const auto targetPow = targetBinPower (binFreq, profile);
+    std::vector<float> mixDb ((size_t) gridPoints), tgtDb ((size_t) gridPoints), act ((size_t) gridPoints), dev ((size_t) gridPoints);
     for (int i = 0; i < gridPoints; ++i)
     {
         const float f = gridFreq (i);
         mixDb[(size_t) i] = (float) (10.0 * std::log10 (bandAverage (binFreq, power, f, 1.0f / 12.0f) + 1.0e-20));
+        tgtDb[(size_t) i] = (float) (10.0 * std::log10 (bandAverage (binFreq, targetPow, f, 1.0f / 12.0f) + 1.0e-20));
         act[(size_t) i] = (float) bandAverage (binFreq, activity, f, 1.0f / 12.0f);
     }
     mixDb = smoothGrid (mixDb, 3);   // ~1/4 octave smoothing: we want tonal build-ups, not single bins
+    tgtDb = smoothGrid (tgtDb, 3);
 
     // 2) align with the target over the core range (median of the difference)
     std::vector<float> diffs;
     for (int i = freqToGrid (100.0f); i <= freqToGrid (10000.0f); ++i)
-        diffs.push_back (mixDb[(size_t) i] - targetDb (gridFreq (i), profile));
+        diffs.push_back (mixDb[(size_t) i] - tgtDb[(size_t) i]);
     std::sort (diffs.begin(), diffs.end());
     const float offset = diffs[diffs.size() / 2];
     for (int i = 0; i < gridPoints; ++i)
-        dev[(size_t) i] = mixDb[(size_t) i] - targetDb (gridFreq (i), profile) - offset;
+        dev[(size_t) i] = mixDb[(size_t) i] - tgtDb[(size_t) i] - offset;
 
     // activity: how much more "peaky" than average a region is
     float actMean = 0.0f;

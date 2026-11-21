@@ -15,9 +15,12 @@ class LoudnessMeter
 public:
     static constexpr int historySize = 600;   // 60 s of short-term values at 10 Hz
 
+    LoudnessMeter() { for (auto& v : history) v.store (-100.0f); }
+
     void prepare (double sampleRate, int numChannels, bool withTruePeak);
     void requestReset() { resetRequested.store (true); }   // thread-safe: applied on the next audio block
     void process (const juce::AudioBuffer<float>& buffer, int numChannels);
+    void offsetRunning (float db);   // audio thread only: shift the running value after a known gain change
 
     float getMomentary() const     { return momentary.load(); }
     float getShortTerm() const     { return shortTerm.load(); }
