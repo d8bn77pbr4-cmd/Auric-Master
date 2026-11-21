@@ -1,3 +1,6 @@
 build/
 JUCE/
 *.zip
+AuricMaster2/JUCE
+AuricMaster2/build/
+AuricMaster2/build-*/
