@@ -5,3 +5,7 @@ AuricMaster2/JUCE
 AuricMaster2/build/
 AuricMaster2/build-*/
 AuricMaster2/*.log
+AuricMaster3/JUCE
+AuricMaster3/build/
+AuricMaster3/build-*/
+AuricMaster3/*.log

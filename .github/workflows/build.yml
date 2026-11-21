@@ -73,3 +73,42 @@ jobs:
         with:
           name: AuricMaster2-macOS
           path: AuricMaster2-macOS.zip
+
+  # ---------------- Auric Master 3 ----------------
+  am3-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S AuricMaster3 -B build-am3 -A x64 -DAM3_BUILD_TESTS=ON
+      - name: Build plugin and tests
+        run: cmake --build build-am3 --config Release --target AuricMaster3_VST3 AM3Tests
+      - name: Run test suite (fails the build on any failed check)
+        run: build-am3/AM3Tests_artefacts/Release/AM3Tests.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuricMaster3-VST3-Windows
+          path: build-am3/AuricMaster3_artefacts/Release/VST3/
+
+  am3-macos:
+    runs-on: macos-15-intel   # still builds a universal (arm64 + x86_64) plugin
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Configure (Universal: Apple Silicon + Intel)"
+        run: cmake -S AuricMaster3 -B build-am3 -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DAM3_BUILD_TESTS=ON
+      - name: Build plugin and tests
+        run: cmake --build build-am3 --config Release --target AuricMaster3_VST3 AuricMaster3_AU AM3Tests
+      - name: Run test suite (fails the build on any failed check)
+        run: build-am3/AM3Tests_artefacts/Release/AM3Tests
+      - name: Ad-hoc sign and package
+        run: |
+          mkdir -p dist
+          cp -R "build-am3/AuricMaster3_artefacts/Release/VST3/Auric Master 3.vst3" dist/
+          cp -R "build-am3/AuricMaster3_artefacts/Release/AU/Auric Master 3.component" dist/
+          codesign --force --deep --sign - "dist/Auric Master 3.vst3"
+          codesign --force --deep --sign - "dist/Auric Master 3.component"
+          ditto -c -k --keepParent dist AuricMaster3-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuricMaster3-macOS
+          path: AuricMaster3-macOS.zip
