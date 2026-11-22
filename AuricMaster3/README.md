@@ -33,7 +33,7 @@ Die Frequenzweiche läuft nur, wenn ein Bandmodul aktiv ist, deshalb ist das Plu
 - **DYNAMIK:** 3-Band-Kompression. Pro Band Threshold, Ratio, Attack, Release, Gain, Modus (Stereo/Mid/Side), dazu SOLO und BYPASS. Die Weichen lassen sich in der Grafik ziehen.
 - **GLUE:** Bus-Kompressor mit Kennlinie und Gain-Reduktions-Verlauf, Auto-Release, Sidechain-Hochpass, Makeup, Mix (Parallel-Kompression).
 - **STEREO & FARBE:** Vektorskop, Breite für Mitten und Höhen, Mono-Bass, WÄRME (Tape-Bandsättigung), GLANZ (Exciter).
-- **LIMITER:** Lautheitsverlauf mit Ziellinie, LERNEN, Drive, Ceiling (True Peak), Clipper (oversampled), Charakter, Output, DELTA (nur hören, was entfernt wird).
+- **LIMITER:** Lautheitsverlauf mit Ziellinie, LERNEN, Drive, Ceiling (True Peak), Clipper, Charakter, Output, DELTA (nur hören, was entfernt wird), OVERSAMPLING HQ (8x, Aliasing −81 dB statt −51 dB).
 - **RESONANZ:** dynamische Resonanzkontrolle mit 6 ziehbaren Bändern und DELTA.
 - **Rechts, immer sichtbar:**
   - LUFS integriert/momentan/kurzzeit, LRA, True Peak, PLR, PSR.
@@ -63,7 +63,7 @@ Genre wählen, ASSISTENT klicken und 15 s abspielen. Danach stellt der Assistent
 ## Qualitätssicherung
 
 Bei jedem Build in GitHub Actions (Windows und macOS) laufen:
-- die Test-Suite (`tests/TestMain.cpp`, 53 Prüfungen),
+- die Test-Suite (`tests/TestMain.cpp`, 54 Prüfungen),
 - **pluginval** mit höchster Strenge (10), das Standard-Prüfwerkzeug für Plugins (State, Automation aus anderen Threads, Puffergrößen, Bus-Layouts, Editor während der Verarbeitung, Parameter-Fuzzing),
 - **auval** (Apples Audio-Unit-Prüfung).
 

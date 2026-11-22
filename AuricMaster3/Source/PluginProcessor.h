@@ -127,7 +127,8 @@ public:
     static constexpr const char* bandIds[3] = { "low", "mid", "high" };
 
 private:
-    enum ConfigBits { cfgRes = 1, cfgLim = 2 };
+    enum ConfigBits { cfgRes = 1, cfgLim = 2, cfgHq = 4 };
+    int wantedConfig() const;
 
     void parameterValueChanged (int, float) override {}
     void parameterGestureChanged (int index, bool starting) override;
@@ -205,8 +206,10 @@ private:
     float glueMakeupS = 1.0f, glueMixS = 1.0f;
 
     // limiter stage
-    std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;
-    int osLog2 = 2, lookahead = 0;
+    // two prepared limiter paths: normal and HQ (twice the oversampling); switching never allocates
+    std::unique_ptr<juce::dsp::Oversampling<float>> oversampling, oversamplingHq;
+    int osLog2 = 2, lookahead = 0, osLog2Hq = 3, lookaheadHq = 0;
+    MasterLimiter limiterHq;
     SoftClipper clipper;
     MasterLimiter limiter;
     TruePeakGuard tpGuard;

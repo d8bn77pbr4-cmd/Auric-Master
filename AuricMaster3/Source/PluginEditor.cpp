@@ -1239,6 +1239,7 @@ MainView::MainView (AuricMaster3Processor& p)
     setupKnob (ceilingL, pl, "ceiling", "CEILING", u8 ("Maximaler True Peak am Ausgang (Streaming: -1 dBTP)"));
     setupKnob (clip, pl, "clip", "CLIPPER", u8 ("Weicher Clipper vor dem Limiter (oversampled)"));
     setupKnob (outputL, pl, "output", "OUTPUT", u8 ("Ausgangspegel (mit Limiter nur absenkbar)"));
+    setupToggle (limHq, pl, "lim_hq", "OVERSAMPLING HQ", u8 ("Doppeltes Oversampling f\xc3\xbcr Clipper und Limiter (8x bis 48 kHz): deutlich weniger Aliasing bei hohem Drive, etwas mehr CPU"));
     setupCombo (limModeL, pl, "lim_mode", "CHARAKTER", u8 ("Transparent = langsam und sauber, Punchy = ausgewogen, Laut = schnell und dicht"));
     learnL.setTooltip (learnS.getTooltip());
     learnL.onClick = [this] { learnClicked(); };
@@ -1609,6 +1610,7 @@ void MainView::layoutLimit()
     placeKnob (clip, { 544, 356, 120, 120 });
     placeKnob (outputL, { 668, 356, 120, 120 });
     placeCombo (limModeL, { 424, 490, 200, 46 });
+    limHq.button.setBounds (424, 546, 200, 28);
 }
 
 void MainView::layoutRes()

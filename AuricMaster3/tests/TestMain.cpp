@@ -641,6 +641,22 @@ int main (int argc, char** argv)
         check (c < -45.0f, "clipper + limiter aliasing", "%.1f dB (9 kHz, +12 dB drive, clipper 100 %%)", c);
     }
     {
+        // limiter HQ: higher oversampling, less aliasing at heavy drive, ceiling still holds
+        auto setup = [] (bool hq) { return [hq] (AuricMaster3Processor& p) { setP (p, "lim_on", 1.0f); setP (p, "clip", 100.0f); setP (p, "lim_drive", 12.0f); setP (p, "lim_hq", hq ? 1.0f : 0.0f); }; };
+        auto pn = makeProc (fs, setup (false)), ph = makeProc (fs, setup (true));
+        const float an = inharmonicDb (*pn, 9000.0f, 0.5f), ah = inharmonicDb (*ph, 9000.0f, 0.5f);
+        auto pt = makeProc (fs, setup (true));
+        std::vector<float> l, r;
+        material (l, r, -18.0f, 0.1f, 95);
+        l.resize ((size_t) fs * 6); r.resize ((size_t) fs * 6);
+        run (*pt, l, r);
+        float tp = 0.0f;
+        lufsOf (l, r, 0, l.size() / block * block, fs, &tp);
+        check (ah < an - 6.0f && tp <= -0.95f && ph->getLatencySamples() > pn->getLatencySamples(), "limiter HQ oversampling",
+               "aliasing %.1f dB -> %.1f dB, true peak %.2f dBTP, latency %.1f -> %.1f ms", an, ah, tp,
+               1000.0 * pn->getLatencySamples() / fs, 1000.0 * ph->getLatencySamples() / fs);
+    }
+    {
         auto q = std::make_unique<AuricMaster3Processor>();
         AuricMaster3Processor::BusesLayout mono;
         mono.inputBuses.add (juce::AudioChannelSet::mono());

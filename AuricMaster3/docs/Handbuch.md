@@ -136,7 +136,7 @@ Mischt das unbearbeitete Signal vor dem Limiter wieder dazu (Parallel-Bearbeitun
 - **CHARAKTER:** Transparent (sauber), Punchy (ausgewogen), Laut (schnell und dicht).
 - **OUTPUT:** Bei aktivem Limiter nur absenkbar, damit das Ceiling garantiert hält.
 - **DELTA:** nur das hören, was Limiter und Clipper entfernen. Hört man darin deutlich Musik (Kick, Stimme), wird zu stark limitiert. Kann laut sein. Nur zum Abhören, beim Export automatisch aus.
-- **Überabtastung:** 4-fach bis 48 kHz, 2-fach bis 96 kHz, darüber nicht nötig. Danach folgt ein True-Peak-Wächter, der das Ceiling garantiert.
+- **OVERSAMPLING HQ** (Standard: an): 8-fach statt 4-fach bis 48 kHz (bzw. 4-fach statt 2-fach bis 96 kHz). Das Aliasing bei hartem Clipping sinkt von etwa −51 dB auf etwa −81 dB, bei rund 2 % mehr CPU. Wer CPU sparen muss, schaltet es aus. Über 96 kHz ist zusätzliche Überabtastung nicht nötig. Danach folgt immer ein True-Peak-Wächter, der das Ceiling garantiert.
 
 ---
 
@@ -231,7 +231,7 @@ CPU (ein Kern, alle Module an): etwa 8 % bei 48 kHz, etwa 24 % bei 192 kHz.
 - **Formate:** VST3 (Windows x64, macOS Universal), AU (macOS). Mono und Stereo, 44,1–192 kHz.
 - **Messung:** BS.1770-4 / EBU R128, True Peak mit 4-facher Interpolation.
 - **Prüfung bei jedem Build (Windows und macOS):**
-  - 53 automatisierte Tests: Messgenauigkeit, Transparenz, Determinismus, LERNEN, Dynamic EQ, Mid/Side-Multiband, DELTA, MONO/SIDE, Presets, Undo, NaN-Schutz, klickfreies Schalten, Aliasing, Mono, große Puffer, Assistent.
+  - 54 automatisierte Tests: Messgenauigkeit, Transparenz, Determinismus, LERNEN, Dynamic EQ, Mid/Side-Multiband, DELTA, MONO/SIDE, Presets, Undo, NaN-Schutz, klickfreies Schalten, Aliasing, Mono, große Puffer, Assistent.
   - **pluginval** mit höchster Strenge (10) und **auval**.
 - **Grenzen:**
   - Nicht notarisiert/signiert (dafür wäre ein Apple-Developer- bzw. Code-Signing-Zertifikat nötig).

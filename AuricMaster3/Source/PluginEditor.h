@@ -295,7 +295,7 @@ private:
     Knob widthMid, widthHigh, monoFreq, satLow, satHigh;
 
     // LIMITER
-    Toggle limOn;
+    Toggle limOn, limHq;
     LimiterView limView;
     Combo targetL, limModeL;
     Knob driveL, ceilingL, clip, outputL;

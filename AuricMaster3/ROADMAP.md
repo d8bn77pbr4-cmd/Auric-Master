@@ -17,6 +17,7 @@ Arbeitsweise: Jede Iteration durchläuft einen Entscheidungs-Loop (Schritt nach 
 | 4 | DELTA-Abhören (Resonanz, Limiter) | fertig |
 | 4 | Mid/Side-Modus im Multiband | fertig |
 | 4 | Abhören MONO / SIDE | fertig |
+| 4 | Limiter OVERSAMPLING HQ (8x), Standard an | fertig |
 | 4 | weitere nach Kundennutzen (Prüfung: Linear-Phase-EQ zurückgestellt) | offen |
 | 5 | **Analoges Studio-Design** – nur Optik, alle Bedienelemente und die Steuerung bleiben unverändert. Erst wenn alle Funktionen stehen. Eigenständiger Look im Stil echter Studio-Hardware, keine Kopie von Waves/SSL. Bei Beginn: Farbrichtung mit dem Nutzer klären. | offen |
 
@@ -30,5 +31,6 @@ Nicht ohne Rückfrage: Dither, Referenz-Track (vom Nutzer früher abgelehnt).
 - **Installer vorgezogen vor Profi-Erweiterungen:** Die Terminal-Installation hat beim Nutzer schon Probleme gemacht. Beim macOS-pkg ist die Bundle-Relocation abgeschaltet (sonst würde macOS auf alte Kopien umleiten), ein Postinstall-Skript meldet das AU an.
 - **DELTA nur für Resonanz und Limiter:** Nur Module, die etwas entfernen, ergeben ein sinnvolles Delta. Es wird zeitlich ausgerichtet, nicht weiterverarbeitet und ist beim Export aus.
 - **Mid/Side als Modus pro Band:** Das deckt die typischen Mastering-Fälle ab, ohne die Regler zu verdoppeln.
+- **HQ-Oversampling als Standard:** Das Aliasing sinkt bei hartem Clipping um 30 dB (−51 auf −81 dB), bei +0,1 ms Latenz und rund 2 % CPU. Über 96 kHz bleibt es bei der normalen Stufe (kein hörbarer Nutzen, aber CPU-Kosten).
 - **Linear-Phase-EQ zurückgestellt:** hohe Latenz (mehrere Tausend Samples) und Vorschwinger bei geringem Nutzen gegenüber dem vorhandenen minimalphasigen EQ.
 - **Presets in realen Einheiten gespeichert:** Sie sind robust gegen spätere Bereichsänderungen. Neue Parameter späterer Versionen erhalten beim Laden ihren Standardwert.

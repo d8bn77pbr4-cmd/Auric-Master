@@ -30,7 +30,7 @@ namespace
         "eq_dyn_att", "eq_dyn_rel",
         "res_delta", "lim_delta",
         "mb_low_mode", "mb_mid_mode", "mb_high_mode",
-        "mon_mono", "mon_side",
+        "mon_mono", "mon_side", "lim_hq",
         "assist_profile"
     };
     enum P
@@ -52,7 +52,7 @@ namespace
         pEqDynAtt = pEqDyn1 + 12, pEqDynRel,
         pResDelta, pLimDelta,
         pMbMode,                       // 3 x mode (stereo / mid / side)
-        pMonMono = pMbMode + 3, pMonSide,
+        pMonMono = pMbMode + 3, pMonSide, pLimHq,
         pAssistProfile,
         pCount
     };
@@ -383,6 +383,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AuricMaster3Processor::creat
     boolP ("lim_delta", "Limiter Delta (monitoring)", false);
     boolP ("mon_mono", "Listen Mono (monitoring)", false);
     boolP ("mon_side", "Listen Side (monitoring)", false);
+    boolP ("lim_hq", "Limiter HQ Oversampling", true);
 
     add (std::make_unique<AudioParameterChoice> (ParameterID { "assist_profile", 1 }, "Assistant Genre", AutoMatcher::profileNames(), 0));
     return { p.begin(), p.end() };
@@ -405,11 +406,20 @@ void AuricMaster3Processor::setParam (const char* id, float value)
 }
 
 //==============================================================================
+int AuricMaster3Processor::wantedConfig() const
+{
+    const bool lim = p (pLimOn) > 0.5f;
+    return (p (pResOn) > 0.5f ? cfgRes : 0) | (lim ? cfgLim : 0) | (lim && p (pLimHq) > 0.5f ? cfgHq : 0);
+}
+
 int AuricMaster3Processor::latencyFor (int config) const
 {
     int l = 0;
     if (config & cfgRes) l += resonance.getLatency();
-    if (config & cfgLim) l += (int) std::round (oversampling->getLatencyInSamples()) + lookahead / (1 << osLog2) + tpGuard.getLatency();
+    if (config & cfgLim)
+        l += ((config & cfgHq) ? (int) std::round (oversamplingHq->getLatencyInSamples()) + lookaheadHq / (1 << osLog2Hq)
+                               : (int) std::round (oversampling->getLatencyInSamples()) + lookahead / (1 << osLog2))
+             + tpGuard.getLatency();
     return l;
 }
 
@@ -433,9 +443,18 @@ void AuricMaster3Processor::prepareToPlay (double sampleRate, int samplesPerBloc
     lookahead = (int) std::ceil (0.002 * sr * osFactor);
     lookahead = (lookahead + osFactor - 1) / osFactor * osFactor;
     limiter.prepare (sr * osFactor, numCh, lookahead);
+    // HQ: 8x up to 48 kHz, 4x up to 96 kHz; above that aliasing lands far outside the audible range anyway
+    osLog2Hq = sr <= 100000.0 ? osLog2 + 1 : osLog2;
+    oversamplingHq = std::make_unique<juce::dsp::Oversampling<float>> ((size_t) numCh, (size_t) osLog2Hq,
+                         juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true, true);
+    oversamplingHq->initProcessing ((size_t) blockCap);
+    const int osFactorHq = 1 << osLog2Hq;
+    lookaheadHq = (int) std::ceil (0.002 * sr * osFactorHq);
+    lookaheadHq = (lookaheadHq + osFactorHq - 1) / osFactorHq * osFactorHq;
+    limiterHq.prepare (sr * osFactorHq, numCh, lookaheadHq);
     tpGuard.prepare (sr, numCh);
 
-    const int maxLatency = latencyFor (cfgRes | cfgLim);
+    const int maxLatency = juce::jmax (latencyFor (cfgRes | cfgLim), latencyFor (cfgRes | cfgLim | cfgHq));
     origDelay.prepare (numCh, maxLatency + 8);
     mixDelay.prepare (numCh, maxLatency + 8);
     origBuffer.setSize (numCh, blockCap);
@@ -468,7 +487,7 @@ void AuricMaster3Processor::prepareToPlay (double sampleRate, int samplesPerBloc
     configFadeStep = 1.0f / (float) (0.01 * sr);
     configSwitching = false;
     configFade = 1.0f;
-    applyConfig ((p (pResOn) > 0.5f ? cfgRes : 0) | (p (pLimOn) > 0.5f ? cfgLim : 0));
+    applyConfig (wantedConfig());
     setLatencySamples (latencySamplesNow.load());
     latencyDirty.store (false);
 }
@@ -506,7 +525,9 @@ void AuricMaster3Processor::resetStates()
     glueMixS = p (pGlueMix) * 0.01f;
     resonance.reset();
     if (oversampling != nullptr) oversampling->reset();
+    if (oversamplingHq != nullptr) oversamplingHq->reset();
     limiter.reset();
+    limiterHq.reset();
     tpGuard.reset();
     corrLR = corrLL = corrRR = 0.0f;
 }
@@ -516,15 +537,17 @@ void AuricMaster3Processor::applyConfig (int config)
     // stages that are switched on start from a clean state; the output stays silent until they deliver audio
     configHold = 0;
     if ((config & cfgRes) && ! (activeConfig & cfgRes)) { resonance.reset(); configHold += resonance.getLatency(); }
-    if ((config & cfgLim) && ! (activeConfig & cfgLim))
+    if ((config & cfgLim) && (! (activeConfig & cfgLim) || (config & cfgHq) != (activeConfig & cfgHq)))
     {
-        oversampling->reset(); limiter.reset(); tpGuard.reset();
-        configHold += latencyFor (cfgLim) + 64;
+        if (config & cfgHq) { oversamplingHq->reset(); limiterHq.reset(); }
+        else                { oversampling->reset(); limiter.reset(); }
+        tpGuard.reset();
+        configHold += latencyFor (cfgLim | (config & cfgHq)) + 64;
     }
     activeConfig = config;
     origDelay.setDelay (latencyFor (config));
     mixDelay.setDelay ((config & cfgRes) ? resonance.getLatency() : 0);
-    const int limLatency = (config & cfgLim) ? latencyFor (cfgLim) : 0;
+    const int limLatency = (config & cfgLim) ? latencyFor (cfgLim | (config & cfgHq)) : 0;
     resDeltaDelay.setDelay (limLatency);   // the resonance delta waits for the limiter stage
     limInDelay.setDelay (limLatency);
     latencySamplesNow.store (latencyFor (config));
@@ -603,6 +626,7 @@ void AuricMaster3Processor::updateControl (int /*numSamples*/)
 
     // limiter
     limiter.setMode ((int) p (pLimMode));
+    limiterHq.setMode ((int) p (pLimMode));
 }
 
 void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int chans)
@@ -611,7 +635,7 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
     const bool stereo = chans > 1;
 
     // latency-affecting modules switch after a short fade-out (then the host is told the new latency)
-    const int wanted = (p (pResOn) > 0.5f ? cfgRes : 0) | (p (pLimOn) > 0.5f ? cfgLim : 0);
+    const int wanted = wantedConfig();
     if (configSwitching && configFade <= 0.0f) applyConfig (wanted);
     else if (! configSwitching && wanted != activeConfig) configSwitching = true;
 
@@ -1015,9 +1039,12 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         const float limCeiling = ceilingLin * dbToGain (-0.3f);   // headroom for the down-sampling filter
         const float clipAmt = p (pClip) * 0.01f;
         clipper.setThreshold (limCeiling * dbToGain (4.0f * (1.0f - clipAmt)), clipAmt > 0.01f);
-        limiter.setCeiling (limCeiling);
+        const bool hq = (activeConfig & cfgHq) != 0;
+        auto& osStage = hq ? *oversamplingHq : *oversampling;
+        auto& lim = hq ? limiterHq : limiter;
+        lim.setCeiling (limCeiling);
         juce::dsp::AudioBlock<float> block (main.getArrayOfWritePointers(), (size_t) chans, (size_t) n);
-        auto os = oversampling->processSamplesUp (block);
+        auto os = osStage.processSamplesUp (block);
         const int osN = (int) os.getNumSamples();
         float clipIn = 0.0f, clipOut = 0.0f;
         if (clipper.on)
@@ -1033,9 +1060,9 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
             }
         grClip.store (clipIn > clipOut && clipOut > 0.0f ? 20.0f * std::log10 (clipOut / clipIn) : 0.0f);
         float* chPtr[2] = { os.getChannelPointer (0), chans > 1 ? os.getChannelPointer (1) : nullptr };
-        limiter.process (chPtr, chans, osN);
-        grLimit.store (limiter.getGainReductionDb());
-        oversampling->processSamplesDown (block);
+        lim.process (chPtr, chans, osN);
+        grLimit.store (lim.getGainReductionDb());
+        osStage.processSamplesDown (block);
         tpGuard.process (main.getArrayOfWritePointers(), chans, n, ceilingLin * dbToGain (-0.05f));
         for (int ch = 0; ch < chans; ++ch)
         {
