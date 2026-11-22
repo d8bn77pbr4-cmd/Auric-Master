@@ -97,7 +97,7 @@ void ClashDisplay::pushWaterfallRow()
     {
         const float t = juce::jlimit (0.0f, 1.0f, std::sqrt (reduction[(size_t) x] / 8.0f));
         const auto c = t < 0.5f ? juce::Colours::transparentBlack.interpolatedWith (Pal::accent, t * 2.0f)
-                                : Pal::accent.interpolatedWith (juce::Colour (0xffe6f0ff), (t - 0.5f) * 2.0f);
+                                : Pal::accent.interpolatedWith (Pal::screenLine, (t - 0.5f) * 2.0f);
         waterfall.setPixelAt (x, 0, c);
     }
 }
@@ -163,9 +163,9 @@ void ClashDisplay::paint (juce::Graphics& g)
         red.lineTo (xAt (i), redY (reduction[(size_t) i]));
     red.lineTo (a.getRight(), a.getY());
     red.closeSubPath();
-    g.setGradientFill (ColourGradient (Colour (0xffe6f0ff).withAlpha (0.55f), 0, a.getY(), Pal::accent.withAlpha (0.25f), 0, a.getY() + redH, false));
+    g.setGradientFill (ColourGradient (Pal::screenLine.withAlpha (0.55f), 0, a.getY(), Pal::accent.withAlpha (0.25f), 0, a.getY() + redH, false));
     g.fillPath (red);
-    g.setColour (Colour (0xffe6f0ff));
+    g.setColour (Pal::screenLine);
     g.strokePath (red, PathStrokeType (1.5f));
 
     // reduction scale
@@ -220,7 +220,7 @@ void ClashDisplay::paint (juce::Graphics& g)
         Path dashed;
         const float dashes[] = { 4.0f, 4.0f };
         PathStrokeType (1.2f).createDashedStroke (dashed, devPath, dashes, 2);
-        g.setColour (Colour (0xffffc46b).withAlpha (0.75f));
+        g.setColour (Pal::toneLine.withAlpha (0.75f));
         g.fillPath (dashed);
     }
 
@@ -233,9 +233,9 @@ void ClashDisplay::paint (juce::Graphics& g)
         const float y = amountToY ((clashWeight (xToFreq (x), cn) - 1.0f) * 100.0f);
         if (px == 0) curve.startNewSubPath (x, y); else curve.lineTo (x, y);
     }
-    g.setColour (Colour (0xff5b8cff).withAlpha (0.35f));
+    g.setColour (Pal::capPurple.brighter (0.5f).withAlpha (0.35f));
     g.strokePath (curve, PathStrokeType (6.0f, PathStrokeType::curved, PathStrokeType::rounded));
-    g.setColour (Colour (0xff6f9bff));
+    g.setColour (Pal::capPurple.brighter (0.9f));
     g.strokePath (curve, PathStrokeType (2.0f, PathStrokeType::curved, PathStrokeType::rounded));
 
     // nodes
@@ -297,7 +297,7 @@ void ClashDisplay::paint (juce::Graphics& g)
             auto box = Rectangle<float> (a.getCentreX() - w * 0.5f, a.getY() + a.getHeight() * 0.5f - 26.0f, w, progress >= 0.0f ? 52.0f : 42.0f);
             g.setColour (Pal::screenBottom.withAlpha (0.92f));
             g.fillRoundedRectangle (box, 6.0f);
-            g.setColour (Colour (0xffffc46b));
+            g.setColour (Pal::toneLine);
             g.drawRoundedRectangle (box, 6.0f, 1.0f);
             auto inner = box.reduced (12.0f, 6.0f);
             g.drawText (line1, inner.removeFromTop (15.0f), Justification::centred);
@@ -309,7 +309,7 @@ void ClashDisplay::paint (juce::Graphics& g)
                 auto bar = inner.removeFromTop (8.0f).reduced (0.0f, 1.0f);
                 g.setColour (Colours::white.withAlpha (0.12f));
                 g.fillRoundedRectangle (bar, 3.0f);
-                g.setColour (Colour (0xffffc46b));
+                g.setColour (Pal::toneLine);
                 g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * progress), 3.0f);
             }
         }

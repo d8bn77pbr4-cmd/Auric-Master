@@ -161,6 +161,7 @@ private:
     std::array<float, 6> grS {};
     std::array<float, 4> peakS {}, peakHold {};
     std::array<float, 90> tpRing {};   // true peak of the last 3 s (for PSR)
+    float vuIn = -30.0f, vuOut = -30.0f, vuGr = 0.0f;   // VU instruments (dB relative to 0 VU, GR in dB)
     int tpPos = 0;
     float corrS = 1.0f;
 };

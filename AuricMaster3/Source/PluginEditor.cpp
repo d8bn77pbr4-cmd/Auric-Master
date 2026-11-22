@@ -18,10 +18,18 @@ namespace
         return f >= 1000.0f ? String (f / 1000.0f, f >= 10000.0f ? 1 : 2) + " kHz" : String (juce::roundToInt (f)) + " Hz";
     }
 
+    // dark-glass display set into the faceplate: black bezel, glass, faint glare
     void fillScreen (juce::Graphics& g, juce::Rectangle<float> r)
     {
-        g.setGradientFill (juce::ColourGradient (Pal::screenTop, 0, r.getY(), Pal::screenBottom, 0, r.getBottom(), false));
-        g.fillRoundedRectangle (r, 8.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.07f));
+        g.drawRoundedRectangle (r.translated (0.0f, 1.0f), 7.0f, 1.0f);
+        g.setColour (juce::Colours::black);
+        g.fillRoundedRectangle (r, 7.0f);
+        const auto in = r.reduced (2.5f);
+        g.setGradientFill (juce::ColourGradient (Pal::screenTop, 0, in.getY(), Pal::screenBottom, 0, in.getBottom(), false));
+        g.fillRoundedRectangle (in, 5.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.03f));
+        g.fillRoundedRectangle (in.withHeight (in.getHeight() * 0.33f).reduced (5.0f, 2.0f), 4.0f);
     }
 
     void drawFreqGrid (juce::Graphics& g, juce::Rectangle<float> a, std::function<float (float)> freqToX, bool labels = true)
@@ -60,16 +68,7 @@ namespace
 void Page::paint (juce::Graphics& g)
 {
     for (auto& gr : groups)
-    {
-        auto r = gr.area.toFloat();
-        g.setColour (Pal::panel);
-        g.fillRoundedRectangle (r, 10.0f);
-        g.setColour (Pal::border);
-        g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
-        g.setColour (Pal::dim);
-        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-        g.drawText (gr.title, gr.area.getX() + 14, gr.area.getY() + 8, gr.area.getWidth() - 28, 14, juce::Justification::centredLeft);
-    }
+        Hardware::plate (g, gr.area.toFloat(), gr.title);
     g.setFont (juce::FontOptions (12.0f));
     for (auto& n : notes)
     {
@@ -262,7 +261,7 @@ void EqCurveView::paint (juce::Graphics& g)
     fillP.lineTo (a.getX(), gainToY (0.0f));
     fillP.closeSubPath();
     const float alpha = moduleOn ? 1.0f : 0.35f;
-    g.setColour (Pal::accent.withAlpha (0.28f * alpha));
+    g.setColour (Pal::screenLine.withAlpha (0.22f * alpha));
     g.fillPath (fillP);
     if (sideDiffers)
     {
@@ -717,7 +716,7 @@ void LimiterView::paint (juce::Graphics& g)
     {
         const int idx = (pos + k) % len;
         const float x = bottom.getX() + colW * (float) k;
-        g.setColour (Pal::accent.withAlpha (0.8f));
+        g.setColour (Pal::screenLine.withAlpha (0.8f));
         g.fillRect (x, bottom.getY(), colW + 0.5f, gy (lim[(size_t) idx]) - bottom.getY());
         g.setColour (Pal::toneLine.withAlpha (0.8f));
         g.fillRect (x, bottom.getY(), colW + 0.5f, (gy (clip[(size_t) idx]) - bottom.getY()) * 0.5f);
@@ -778,34 +777,41 @@ void LoudnessPanel::refresh()
     corrS = corrS * 0.85f + proc.correlation.load() * 0.15f;
     tpRing[(size_t) tpPos] = proc.outMeter.getTruePeakDb();
     tpPos = (tpPos + 1) % (int) tpRing.size();
+
+    // VU instruments: 300 ms ballistics. IN: 0 VU = -18 LUFS, OUT: 0 VU = loudness target (or -14 LUFS)
+    const int tIdx = (int) raw (proc, "target");
+    const float outRef = tIdx > 0 ? Targets::lufs (tIdx) : -14.0f;
+    const float vuC = 0.104f;
+    vuIn += (juce::jlimit (-30.0f, 6.0f, proc.inMeter.getMomentary() + 18.0f) - vuIn) * vuC;
+    vuOut += (juce::jlimit (-30.0f, 6.0f, proc.outMeter.getMomentary() - outRef) - vuOut) * vuC;
+    float grTotal = juce::jmin (proc.grLow.load(), proc.grMid.load(), proc.grHigh.load()) + proc.grGlue.load() + proc.grClip.load() + proc.grLimit.load();
+    grTotal = juce::jlimit (-24.0f, 0.0f, grTotal);
+    vuGr = grTotal < vuGr ? grTotal : vuGr + (grTotal - vuGr) * vuC;
     repaint();
 }
 
 void LoudnessPanel::paint (juce::Graphics& g)
 {
     using namespace juce;
-    auto r = getLocalBounds().toFloat();
-    g.setColour (Pal::panel);
-    g.fillRoundedRectangle (r, 10.0f);
-    g.setColour (Pal::border);
-    g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
-    const int W = getWidth();
+    const auto full = getLocalBounds().toFloat();
+    Hardware::plate (g, full, {}, true);
+    const float W = full.getWidth();
+    Hardware::engrave (g, u8 ("AUSGANG \xc2\xb7 LAUTHEIT"), { 22.0f, 12.0f, 200.0f, 14.0f }, Justification::centredLeft, 10.5f, Pal::dim);
 
-    g.setColour (Pal::dim);
-    g.setFont (FontOptions (11.0f, Font::bold));
-    g.drawText (u8 ("AUSGANG \xc2\xb7 LAUTHEIT"), 16, 12, 200, 16, Justification::centredLeft);
-
+    // ---- integrated loudness display ----
+    auto lcd = Rectangle<float> (14.0f, 34.0f, W - 28.0f, 78.0f);
+    fillScreen (g, lcd);
     const float integ = proc.outMeter.getIntegrated();
-    g.setColour (Pal::deep);
-    g.setFont (FontOptions (46.0f, Font::bold));
-    g.drawText (integ > -70.0f ? String (integ, 1) : u8 ("\xe2\x80\x93"), 14, 30, 190, 54, Justification::centredRight);
-    g.setColour (Pal::dim);
-    g.setFont (FontOptions (13.0f, Font::bold));
-    g.drawText ("LUFS", 210, 46, 80, 16, Justification::centredLeft);
-    g.setFont (FontOptions (10.5f));
-    g.drawText ("integriert", 210, 62, 80, 14, Justification::centredLeft);
+    const Colour lcdText (0xfff3c47c);
+    g.setColour (lcdText);
+    g.setFont (FontOptions (40.0f, Font::bold));
+    g.drawText (integ > -70.0f ? String (integ, 1) : u8 ("\xe2\x80\x93"), (int) lcd.getX() + 8, (int) lcd.getY() + 4, 160, 46, Justification::centredRight);
+    g.setColour (lcdText.withAlpha (0.75f));
+    g.setFont (FontOptions (12.0f, Font::bold));
+    g.drawText ("LUFS", (int) lcd.getX() + 174, (int) lcd.getY() + 14, 80, 14, Justification::centredLeft);
+    g.setFont (FontOptions (10.0f));
+    g.drawText ("integriert", (int) lcd.getX() + 174, (int) lcd.getY() + 29, 80, 12, Justification::centredLeft);
 
-    // target: how far the current loudness is from it (nothing is adjusted automatically)
     const int t = (int) raw (proc, "target");
     String targetLine;
     Colour dot = Pal::dim;
@@ -817,64 +823,143 @@ void LoudnessPanel::paint (juce::Graphics& g)
         else if (st > -60.0f)
         {
             const float d = (integ > -70.0f ? integ : st) - tl;
-            dot = std::abs (d) < 1.0f ? Pal::good : (std::abs (d) < 3.0f ? Pal::toneLine : Pal::warn);
+            dot = std::abs (d) < 1.0f ? Pal::good : (std::abs (d) < 3.0f ? Pal::accent : Pal::warn);
             targetLine = "Ziel " + String (tl, 0) + u8 (" LUFS \xc2\xb7 Abweichung ") + dbText (d) + " LU";
         }
         else targetLine = "Ziel " + String (tl, 0) + " LUFS";
     }
     else targetLine = u8 ("Kein Lautheitsziel");
+    auto led = Rectangle<float> (lcd.getX() + 10.0f, lcd.getBottom() - 19.0f, 8.0f, 8.0f);
+    g.setColour (dot.withAlpha (0.3f));
+    g.fillEllipse (led.expanded (2.5f));
     g.setColour (dot);
-    g.fillEllipse (18.0f, 93.0f, 9.0f, 9.0f);
-    g.setColour (Pal::text);
-    g.setFont (FontOptions (12.0f, Font::bold));
-    g.drawText (targetLine, 34, 89, W - 50, 18, Justification::centredLeft);
+    g.fillEllipse (led);
+    g.setColour (Pal::screenText);
+    g.setFont (FontOptions (11.5f, Font::bold));
+    g.drawText (targetLine, (int) lcd.getX() + 24, (int) lcd.getBottom() - 23, (int) lcd.getWidth() - 30, 16, Justification::centredLeft);
 
+    // ---- VU instruments ----
     const float ceiling = raw (proc, "ceiling");
-    const float tpMax = proc.outMeter.getTruePeakMaxDb();
     const bool limOn = raw (proc, "lim_on") > 0.5f;
-    // PLR = true peak max - integrated, PSR = true peak (3 s) - short-term: how much dynamics is left
+    const float pkIn = jmax (peakHold[0], peakHold[1]), pkOut = jmax (peakHold[2], peakHold[3]);
+    auto drawVu = [&] (Rectangle<float> r, float value, bool grMeter, const String& title, const String& sub, bool peakLed)
+    {
+        // bezel and backlit face
+        g.setColour (Colours::black);
+        g.fillRoundedRectangle (r, 5.0f);
+        auto face = r.reduced (3.0f);
+        g.setGradientFill (ColourGradient (Colour (0xfff6e7bd), face.getX(), face.getY(), Colour (0xffd8bf82), face.getX(), face.getBottom(), false));
+        g.fillRoundedRectangle (face, 3.0f);
+        const float coverH = 15.0f;
+        const float a0 = -0.86f, a1 = 0.86f;   // needle swing (radians)
+        // the pivot sits under the cover strip; the scale is sized to the instrument
+        const auto pivot = Point<float> (face.getCentreX(), face.getBottom() + 3.0f);
+        const float rad = jmin ((face.getWidth() * 0.5f - 13.0f) / (0.95f * std::sin (a1)), (face.getHeight() + 3.0f - 14.0f) / 1.10f);
+        auto defl = [grMeter] (float v)        // VU law: deflection follows the voltage, +3 VU = full scale
+        {
+            if (grMeter) return jlimit (0.0f, 1.0f, 1.0f + v / 20.0f);
+            return jlimit (0.0f, 1.0f, std::pow (10.0f, (v - 3.0f) / 20.0f));
+        };
+        auto pointAt = [&] (float d, float rr) { const float a = a0 + (a1 - a0) * d; return Point<float> (pivot.x + std::sin (a) * rr, pivot.y - std::cos (a) * rr); };
+        Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (face.toNearestInt());
+        Path arc, red;
+        arc.addCentredArc (pivot.x, pivot.y, rad * 0.86f, rad * 0.86f, 0.0f, a0, a1, true);
+        g.setColour (Colour (0xff2a2620));
+        g.strokePath (arc, PathStrokeType (1.0f));
+        if (! grMeter)
+        {
+            red.addCentredArc (pivot.x, pivot.y, rad * 0.86f, rad * 0.86f, 0.0f, a0 + (a1 - a0) * defl (0.0f), a1, true);
+            g.setColour (Colour (0xffc0392b));
+            g.strokePath (red, PathStrokeType (3.0f));
+        }
+        const float marks[] = { -20.0f, -10.0f, -5.0f, -3.0f, 0.0f, 3.0f };
+        const float grMarks[] = { -20.0f, -10.0f, -6.0f, -3.0f, 0.0f };
+        g.setFont (FontOptions (7.5f, Font::bold));
+        for (int k = 0; k < (grMeter ? 5 : 6); ++k)
+        {
+            const float v = grMeter ? grMarks[k] : marks[k];
+            const auto p0 = pointAt (defl (v), rad * 0.86f), p1 = pointAt (defl (v), rad * 0.95f), pl = pointAt (defl (v), rad * 1.06f);
+            g.setColour (! grMeter && v > 0.0f ? Colour (0xffc0392b) : Colour (0xff2a2620));
+            g.drawLine (p0.x, p0.y, p1.x, p1.y, 1.2f);
+            g.drawText ((v > 0 ? "+" : "") + String ((int) v), (int) pl.x - 10, (int) pl.y - 5, 20, 9, Justification::centred);
+        }
+        g.setColour (Colour (0xff2a2620));
+        g.setFont (FontOptions (9.5f, Font::bold));
+        g.drawText (title, (int) face.getX(), (int) (pivot.y - rad * 0.52f), (int) face.getWidth(), 11, Justification::centred);
+        // needle
+        const auto tip = pointAt (defl (value), rad * 0.95f);
+        g.setColour (Colours::black.withAlpha (0.22f));
+        g.drawLine (pivot.x + 1.5f, pivot.y, tip.x + 1.5f, tip.y + 1.5f, 1.4f);
+        g.setColour (Colour (0xff141210));
+        g.drawLine (pivot.x, pivot.y, tip.x, tip.y, 1.3f);
+        // cover strip with the extra value (hides the pivot, like on real meters)
+        auto cover = face.withTrimmedTop (face.getHeight() - coverH);
+        g.setGradientFill (ColourGradient (Colour (0xff2b2e33), 0, cover.getY(), Colour (0xff15171a), 0, cover.getBottom(), false));
+        g.fillRect (cover);
+        g.setColour (Colour (0xfff3c47c));
+        g.setFont (FontOptions (8.5f, Font::bold));
+        g.drawText (sub, cover.toNearestInt(), Justification::centred);
+        // peak LED
+        if (! grMeter)
+        {
+            auto pl = Rectangle<float> (face.getRight() - 9.0f, face.getY() + 4.0f, 5.0f, 5.0f);
+            g.setColour (peakLed ? Pal::warn : Colour (0xff6b2a22));
+            g.fillEllipse (pl);
+        }
+        // glass glare
+        g.setColour (Colours::white.withAlpha (0.10f));
+        g.fillRoundedRectangle (face.withHeight (face.getHeight() * 0.32f), 3.0f);
+    };
+    const float vw = (W - 28.0f - 8.0f) / 3.0f;
+    const float inI = proc.inMeter.getIntegrated();
+    drawVu ({ 14.0f, 118.0f, vw, 84.0f }, vuIn, false, "IN",
+            (inI > -70.0f ? String (inI, 1) + " LUFS" : String ("PK ") + dbText (pkIn)), pkIn > -1.0f);
+    drawVu ({ 18.0f + vw, 118.0f, vw, 84.0f }, vuOut, false, "OUT", "PK " + dbText (pkOut) + " dB", pkOut > (limOn ? ceiling + 0.1f : -0.1f));
+    drawVu ({ 22.0f + 2.0f * vw, 118.0f, vw, 84.0f }, vuGr, true, "GR",
+            limOn ? "DRIVE " + dbText (raw (proc, "lim_drive")) : String (dbText (vuGr) + " dB"), false);
+
+    // ---- loudness readouts ----
     const float st = proc.outMeter.getShortTerm();
+    const float tpMax = proc.outMeter.getTruePeakMaxDb();
     float tp3 = -100.0f;
     for (float v : tpRing) tp3 = jmax (tp3, v);
     const String plr = integ > -70.0f && tpMax > -99.0f ? String (tpMax - integ, 1) : u8 ("\xe2\x80\x93");
     const String psr = st > -70.0f && tp3 > -99.0f ? String (tp3 - st, 1) : u8 ("\xe2\x80\x93");
     struct Tile { String label, value, unit; Colour colour; };
     const Tile tiles[6] = {
-        { "MOMENTAN", dbText (proc.outMeter.getMomentary()), "LUFS", Pal::text },
-        { "KURZZEIT", dbText (st), "LUFS", Pal::text },
-        { "LRA", String (proc.outMeter.getLra(), 1), "LU", Pal::text },
-        { "TRUE PEAK", dbText (tpMax), "dBTP", (limOn ? tpMax > ceiling + 0.1f : tpMax > 0.0f) ? Pal::warn : Pal::text },
-        { "PLR", plr, "dB", Pal::text },
-        { "PSR", psr, "dB", Pal::text } };
-    const float tw = ((float) W - 28.0f - 8.0f) / 3.0f;
+        { "MOMENTAN", dbText (proc.outMeter.getMomentary()), "LUFS", lcdText },
+        { "KURZZEIT", dbText (st), "LUFS", lcdText },
+        { "LRA", String (proc.outMeter.getLra(), 1), "LU", lcdText },
+        { "TRUE PEAK", dbText (tpMax), "dBTP", (limOn ? tpMax > ceiling + 0.1f : tpMax > 0.0f) ? Pal::warn : lcdText },
+        { "PLR", plr, "dB", lcdText },
+        { "PSR", psr, "dB", lcdText } };
+    const float tw = (W - 28.0f - 8.0f) / 3.0f;
     for (int i = 0; i < 6; ++i)
     {
-        const auto tr = Rectangle<float> (14.0f + (float) (i % 3) * (tw + 4.0f), 114.0f + (float) (i / 3) * 54.0f, tw, 48.0f);
-        g.setColour (Pal::bg);
-        g.fillRoundedRectangle (tr, 8.0f);
-        g.setColour (Pal::dim);
-        g.setFont (FontOptions (10.0f, Font::bold));
-        g.drawText (tiles[i].label, tr.reduced (10.0f, 5.0f).withHeight (12.0f), Justification::centredLeft);
+        const auto tr = Rectangle<float> (14.0f + (float) (i % 3) * (tw + 4.0f), 210.0f + (float) (i / 3) * 46.0f, tw, 42.0f);
+        fillScreen (g, tr);
+        g.setColour (Pal::screenText);
+        g.setFont (FontOptions (8.5f, Font::bold));
+        g.drawText (tiles[i].label, tr.reduced (7.0f, 4.0f).withHeight (11.0f), Justification::centredLeft);
+        g.drawText (tiles[i].unit, tr.reduced (6.0f, 4.0f).withHeight (11.0f), Justification::centredRight);
         g.setColour (tiles[i].colour);
-        g.setFont (FontOptions (18.0f, Font::bold));
-        g.drawText (tiles[i].value, tr.reduced (8.0f, 0.0f).withTrimmedTop (18.0f).withHeight (26.0f), Justification::centredLeft);
-        g.setColour (Pal::dim);
-        g.setFont (FontOptions (9.0f, Font::bold));
-        g.drawText (tiles[i].unit, tr.reduced (6.0f, 0.0f).withTrimmedTop (2.0f).withHeight (14.0f), Justification::centredRight);
+        g.setFont (FontOptions (17.0f, Font::bold));
+        g.drawText (tiles[i].value, tr.reduced (7.0f, 0.0f).withTrimmedTop (15.0f).withHeight (24.0f), Justification::centredLeft);
     }
 
-    // history
-    auto hist = Rectangle<float> (14.0f, 226.0f, (float) W - 28.0f, 80.0f);
+    // ---- loudness history ----
+    auto hist = Rectangle<float> (14.0f, 304.0f, W - 28.0f, 66.0f);
     fillScreen (g, hist);
-    auto ha = hist.reduced (8.0f, 10.0f).withTrimmedTop (8.0f);
+    auto ha = hist.reduced (8.0f, 8.0f).withTrimmedTop (6.0f);
     auto hy = [&] (float l) { return jmap (jlimit (-40.0f, 0.0f, l), -40.0f, 0.0f, ha.getBottom(), ha.getY()); };
-    g.setFont (FontOptions (9.5f));
+    g.setFont (FontOptions (9.0f));
     for (float l = -36.0f; l <= -12.0f; l += 12.0f)
     {
         g.setColour (Colours::white.withAlpha (0.06f));
         g.drawHorizontalLine ((int) hy (l), ha.getX(), ha.getRight());
         g.setColour (Pal::screenText.withAlpha (0.5f));
-        g.drawText (String ((int) l), (int) ha.getRight() - 24, (int) hy (l) - 11, 24, 10, Justification::centredRight);
+        g.drawText (String ((int) l), (int) ha.getRight() - 24, (int) hy (l) - 10, 24, 10, Justification::centredRight);
     }
     if (t > 0)
     {
@@ -896,29 +981,25 @@ void LoudnessPanel::paint (juce::Graphics& g)
         }
         return p;
     };
-    g.setColour (Pal::screenText.withAlpha (0.45f));
-    g.strokePath (histPath (histIn), PathStrokeType (1.2f));
-    g.setColour (Colours::white);
-    g.strokePath (histPath (histOut), PathStrokeType (1.8f));
+    g.setColour (Pal::screenText.withAlpha (0.4f));
+    g.strokePath (histPath (histIn), PathStrokeType (1.1f));
+    g.setColour (Pal::screenLine);
+    g.strokePath (histPath (histOut), PathStrokeType (1.7f));
     g.setColour (Pal::screenText);
-    g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText (u8 ("KURZZEIT \xc2\xb7 60 s"), (int) hist.getX() + 8, (int) hist.getY() + 4, 140, 12, Justification::centredLeft);
-    g.setColour (Pal::screenText.withAlpha (0.6f));
-    g.drawText ("Eingang", (int) hist.getX() + 110, (int) hist.getY() + 4, 60, 12, Justification::centredLeft);
+    g.setFont (FontOptions (9.0f, Font::bold));
+    g.drawText (u8 ("KURZZEIT \xc2\xb7 60 s"), (int) hist.getX() + 8, (int) hist.getY() + 4, 140, 11, Justification::centredLeft);
 
-    // streaming preview: how much the platforms would change the level (approximation of their normalisation)
-    g.setColour (Pal::dim);
-    g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText ("STREAMING-ANPASSUNG", 16, 314, 200, 12, Justification::centredLeft);
+    // ---- streaming adjustment ----
+    Hardware::engrave (g, "STREAMING-ANPASSUNG", { 16.0f, 376.0f, 200.0f, 12.0f }, Justification::centredLeft, 9.0f, Pal::dim);
     {
         struct Pf { const char* name; float target; bool boosts; };
         const Pf pf[3] = { { "SPOTIFY", -14.0f, true }, { "YOUTUBE", -14.0f, false }, { "APPLE", -16.0f, true } };
         for (int k = 0; k < 3; ++k)
         {
-            const float x = 16.0f + (float) k * ((float) W - 32.0f) / 3.0f;
+            const float x = 16.0f + (float) k * (W - 32.0f) / 3.0f;
             g.setColour (Pal::dim);
-            g.setFont (FontOptions (9.0f, Font::bold));
-            g.drawText (pf[k].name, (int) x, 328, 90, 11, Justification::centredLeft);
+            g.setFont (FontOptions (8.5f, Font::bold));
+            g.drawText (pf[k].name, (int) x, 390, 90, 10, Justification::centredLeft);
             String v = u8 ("\xe2\x80\x93");
             Colour c = Pal::text;
             if (integ > -70.0f)
@@ -930,75 +1011,48 @@ void LoudnessPanel::paint (juce::Graphics& g)
             }
             g.setColour (c);
             g.setFont (FontOptions (13.0f, Font::bold));
-            g.drawText (v, (int) x, 340, 96, 15, Justification::centredLeft);
+            g.drawText (v, (int) x, 401, 96, 15, Justification::centredLeft);
         }
     }
 
-    // sample-peak meters in / out
-    g.setColour (Pal::dim);
-    g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText ("PEAK EIN", 16, 362, 80, 12, Justification::centredLeft);
-    g.drawText ("PEAK AUS", W / 2 + 4, 362, 80, 12, Justification::centredLeft);
-    for (int i = 0; i < 4; ++i)
-    {
-        const float x0 = i < 2 ? 16.0f : (float) W * 0.5f + 4.0f;
-        const float w = (float) W * 0.5f - 20.0f;
-        auto b = Rectangle<float> (x0, 376.0f + (float) (i % 2) * 8.0f, w, 6.0f);
-        g.setColour (Pal::track);
-        g.fillRoundedRectangle (b, 3.0f);
-        const float frac = jlimit (0.0f, 1.0f, (peakS[(size_t) i] + 60.0f) / 60.0f), hold = jlimit (0.0f, 1.0f, (peakHold[(size_t) i] + 60.0f) / 60.0f);
-        g.setColour (peakHold[(size_t) i] > -0.1f ? Pal::warn : Pal::accent);
-        g.fillRoundedRectangle (b.withWidth (b.getWidth() * frac), 3.0f);
-        g.setColour (Pal::text);
-        g.fillRect (b.getX() + b.getWidth() * hold - 1.0f, b.getY(), 2.0f, b.getHeight());
-    }
-    g.setColour (Pal::text);
-    g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText (dbText (jmax (peakHold[0], peakHold[1])) + " dB", 16, 391, 120, 12, Justification::centredLeft);
-    g.drawText (dbText (jmax (peakHold[2], peakHold[3])) + " dB", W / 2 + 4, 391, 120, 12, Justification::centredLeft);
-
-    // input loudness, drive
-    const float inI = proc.inMeter.getIntegrated();
-    g.setColour (Pal::dim);
-    g.drawText ("EINGANG", 16, 410, 120, 12, Justification::centredLeft);
-    g.drawText (limOn ? "DRIVE (FEST)" : "LIMITER", W / 2 + 4, 410, 140, 12, Justification::centredLeft);
-    g.setColour (Pal::text);
-    g.setFont (FontOptions (14.0f, Font::bold));
-    g.drawText ((inI > -70.0f ? String (inI, 1) : u8 ("\xe2\x80\x93")) + " LUFS", 16, 423, 140, 18, Justification::centredLeft);
-    g.drawText (limOn ? dbText (raw (proc, "lim_drive")) + " dB" : String ("aus"), W / 2 + 4, 423, 140, 18, Justification::centredLeft);
-
-    // correlation
-    g.setColour (Pal::dim);
-    g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText ("KORRELATION", 16, 448, 140, 12, Justification::centredLeft);
+    // ---- correlation ----
+    Hardware::engrave (g, "KORRELATION", { 16.0f, 424.0f, 140.0f, 12.0f }, Justification::centredLeft, 9.0f, Pal::dim);
     g.setColour (corrS < 0.0f ? Pal::warn : Pal::text);
-    g.drawText (String (corrS, 2), W - 80, 448, 64, 12, Justification::centredRight);
-    auto bar = Rectangle<float> (16.0f, 463.0f, (float) W - 32.0f, 7.0f);
-    g.setColour (Pal::track);
-    g.fillRoundedRectangle (bar, 4.0f);
+    g.setFont (FontOptions (10.0f, Font::bold));
+    g.drawText (String (corrS, 2), (int) W - 80, 424, 64, 12, Justification::centredRight);
+    auto bar = Rectangle<float> (16.0f, 440.0f, W - 32.0f, 7.0f);
+    g.setColour (Colours::black.withAlpha (0.6f));
+    g.fillRoundedRectangle (bar, 3.5f);
     const float mx = bar.getX() + bar.getWidth() * (jlimit (-1.0f, 1.0f, corrS) + 1.0f) * 0.5f;
     g.setColour (corrS < 0.0f ? Pal::warn : Pal::good);
-    g.fillRoundedRectangle (Rectangle<float> (jmin (mx, bar.getCentreX()), bar.getY(), std::abs (mx - bar.getCentreX()), bar.getHeight()), 4.0f);
+    g.fillRoundedRectangle (Rectangle<float> (jmin (mx, bar.getCentreX()), bar.getY(), std::abs (mx - bar.getCentreX()), bar.getHeight()), 3.5f);
     g.setColour (Pal::text);
     g.fillRect (bar.getCentreX() - 0.5f, bar.getY() - 2.0f, 1.0f, bar.getHeight() + 4.0f);
 
-    // gain reduction
-    g.setColour (Pal::dim);
-    g.drawText ("GAIN-REDUKTION", 16, 480, 160, 12, Justification::centredLeft);
+    // ---- gain reduction: LED ladders ----
+    Hardware::engrave (g, "GAIN-REDUKTION", { 16.0f, 458.0f, 160.0f, 12.0f }, Justification::centredLeft, 9.0f, Pal::dim);
     const String names[6] = { "TIEFEN", "MITTEN", u8 ("H\xc3\x96HEN"), "GLUE", "CLIPPER", "LIMITER" };
     for (int i = 0; i < 6; ++i)
     {
-        const float y = 495.0f + (float) i * 16.0f;
+        const float y = 475.0f + (float) i * 18.5f;
         g.setColour (Pal::dim);
-        g.setFont (FontOptions (10.0f, Font::bold));
-        g.drawText (names[i], 16, (int) y, 64, 14, Justification::centredLeft);
-        auto b = Rectangle<float> (82.0f, y + 3.0f, (float) W - 82.0f - 70.0f, 8.0f);
-        g.setColour (Pal::track);
-        g.fillRoundedRectangle (b, 4.0f);
-        g.setColour (i >= 4 ? Pal::deep : Pal::accent);
-        g.fillRoundedRectangle (b.withWidth (b.getWidth() * jmin (1.0f, grS[(size_t) i] / 12.0f)), 4.0f);
+        g.setFont (FontOptions (9.5f, Font::bold));
+        g.drawText (names[i], 16, (int) y, 64, 13, Justification::centredLeft);
+        auto b = Rectangle<float> (80.0f, y + 2.0f, W - 80.0f - 70.0f, 9.0f);
+        g.setColour (Colours::black.withAlpha (0.6f));
+        g.fillRoundedRectangle (b.expanded (1.0f), 2.0f);
+        constexpr int segs = 24;
+        const float sw = b.getWidth() / (float) segs;
+        const int litSegs = roundToInt (jmin (1.0f, grS[(size_t) i] / 12.0f) * (float) segs);
+        for (int k = 0; k < segs; ++k)
+        {
+            const bool lit = k < litSegs;
+            const Colour c = k < 12 ? Pal::good : (k < 18 ? Pal::accent : Pal::warn);
+            g.setColour (lit ? c : c.withAlpha (0.12f));
+            g.fillRect (b.getX() + (float) k * sw + 0.5f, b.getY(), sw - 1.2f, b.getHeight());
+        }
         g.setColour (Pal::text);
-        g.drawText (String (-grS[(size_t) i], 1) + " dB", W - 76, (int) y, 60, 14, Justification::centredRight);
+        g.drawText (String (-grS[(size_t) i], 1) + " dB", (int) W - 74, (int) y, 58, 13, Justification::centredRight);
     }
 }
 
@@ -1007,42 +1061,51 @@ void TabButton::paintButton (juce::Graphics& g, bool highlighted, bool)
 {
     auto r = getLocalBounds().toFloat();
     const bool sel = getToggleState();
-    g.setColour (sel ? Pal::deep : (highlighted ? Pal::text : Pal::dim));
-    g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    auto textArea = r.withTrimmedBottom (4.0f);
+    const auto colour = sel ? Pal::deep : (highlighted ? Pal::text : Pal::dim);
+    auto textArea = r.withTrimmedBottom (5.0f);
     if (on != nullptr)
     {
-        const float tw = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), getButtonText());
-        const float x = r.getCentreX() - (tw + 12.0f) * 0.5f;
-        g.setColour (on->load() > 0.5f ? Pal::good : Pal::track);
-        g.fillEllipse (x, textArea.getCentreY() - 3.5f, 7.0f, 7.0f);
-        g.setColour (sel ? Pal::deep : (highlighted ? Pal::text : Pal::dim));
-        textArea = juce::Rectangle<float> (x + 12.0f, textArea.getY(), tw + 4.0f, textArea.getHeight());
-        g.drawText (getButtonText(), textArea, juce::Justification::centredLeft);
+        const float tw = juce::GlyphArrangement::getStringWidth (juce::FontOptions (11.5f, juce::Font::bold).withKerningFactor (0.06f), getButtonText());
+        const float x = r.getCentreX() - (tw + 13.0f) * 0.5f;
+        const bool lit = on->load() > 0.5f;
+        auto led = juce::Rectangle<float> (x, textArea.getCentreY() - 3.5f, 7.0f, 7.0f);
+        if (lit) { g.setColour (Pal::good.withAlpha (0.3f)); g.fillEllipse (led.expanded (2.5f)); }
+        g.setColour (lit ? Pal::good : juce::Colour (0xff15171a));
+        g.fillEllipse (led);
+        g.setColour (juce::Colours::black.withAlpha (0.6f));
+        g.drawEllipse (led, 0.8f);
+        Hardware::engrave (g, getButtonText(), { x + 13.0f, textArea.getY(), tw + 6.0f, textArea.getHeight() }, juce::Justification::centredLeft, 11.5f, colour);
     }
     else
-        g.drawText (getButtonText(), textArea, juce::Justification::centred);
+        Hardware::engrave (g, getButtonText(), textArea, juce::Justification::centred, 11.5f, colour);
     if (sel)
     {
+        auto lamp = r.removeFromBottom (4.0f).reduced (r.getWidth() * 0.16f, 0.5f);
+        g.setColour (Pal::accent.withAlpha (0.35f));
+        g.fillRoundedRectangle (lamp.expanded (2.0f, 1.5f), 3.0f);
         g.setColour (Pal::accent);
-        g.fillRoundedRectangle (r.removeFromBottom (3.0f).reduced (r.getWidth() * 0.15f, 0.0f), 1.5f);
+        g.fillRoundedRectangle (lamp, 1.5f);
     }
 }
 
 void ArrowIconButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
 {
     using namespace juce;
-    auto r = getLocalBounds().toFloat().reduced (1.0f);
-    g.setColour (down ? Pal::light : Pal::panel);
-    g.fillRoundedRectangle (r, 6.0f);
-    g.setColour (highlighted && isEnabled() ? Pal::accent : Pal::border);
-    g.drawRoundedRectangle (r, 6.0f, 1.2f);
+    auto r = getLocalBounds().toFloat().reduced (1.0f, 1.5f);
+    g.setColour (Colours::black.withAlpha (0.6f));
+    g.fillRoundedRectangle (r.translated (0.0f, 1.5f), 4.0f);
+    g.setGradientFill (ColourGradient (Colour (down ? 0xff2c3035 : 0xff4a4f57), 0, r.getY(), Colour (down ? 0xff24272b : 0xff2b2f34), 0, r.getBottom(), false));
+    g.fillRoundedRectangle (r, 4.0f);
+    g.setColour (Colours::white.withAlpha (highlighted && isEnabled() ? 0.22f : 0.12f));
+    g.drawLine (r.getX() + 3.0f, r.getY() + 1.0f, r.getRight() - 3.0f, r.getY() + 1.0f, 1.0f);
+    g.setColour (Pal::border);
+    g.drawRoundedRectangle (r, 4.0f, 1.0f);
     const auto c = r.getCentre();
     const float rad = r.getHeight() * 0.24f;
     Path arc;
     arc.addCentredArc (c.x, c.y + 2.0f, rad, rad, 0.0f, redo ? -2.2f : 2.2f, 0.0f, true);
     const auto tip = arc.getCurrentPosition();
-    g.setColour (isEnabled() ? Pal::accent : Pal::track);
+    g.setColour (isEnabled() ? Pal::text : Pal::dim.withAlpha (0.35f));
     g.strokePath (arc, PathStrokeType (2.0f, PathStrokeType::curved, PathStrokeType::rounded));
     Path head;
     const float s = 4.5f, dir = redo ? 1.0f : -1.0f;
@@ -1050,17 +1113,22 @@ void ArrowIconButton::paintButton (juce::Graphics& g, bool highlighted, bool dow
     g.fillPath (head);
 }
 
-void SnapButton::paintButton (juce::Graphics& g, bool highlighted, bool)
+void SnapButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
 {
-    auto r = getLocalBounds().toFloat().reduced (1.0f);
+    using namespace juce;
+    auto r = getLocalBounds().toFloat().reduced (1.0f, 1.5f);
     const bool on = getToggleState();
-    g.setColour (on ? Pal::accent : Pal::panel);
-    g.fillRoundedRectangle (r, 6.0f);
-    g.setColour (on || highlighted ? Pal::accent : Pal::border);
-    g.drawRoundedRectangle (r, 6.0f, 1.2f);
-    g.setColour (on ? juce::Colours::white : Pal::text);
-    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    g.drawText (getButtonText(), r, juce::Justification::centred);
+    g.setColour (Colours::black.withAlpha (0.6f));
+    g.fillRoundedRectangle (r.translated (0.0f, 1.5f), 4.0f);
+    if (on) g.setGradientFill (ColourGradient (Pal::accent.brighter (0.25f), 0, r.getY(), Pal::accent.darker (0.35f), 0, r.getBottom(), false));
+    else    g.setGradientFill (ColourGradient (Colour (down ? 0xff2c3035 : 0xff4a4f57), 0, r.getY(), Colour (0xff2b2f34), 0, r.getBottom(), false));
+    g.fillRoundedRectangle (r, 4.0f);
+    g.setColour (Colours::white.withAlpha (on ? 0.35f : (highlighted ? 0.22f : 0.12f)));
+    g.drawLine (r.getX() + 3.0f, r.getY() + 1.0f, r.getRight() - 3.0f, r.getY() + 1.0f, 1.0f);
+    g.setColour (Pal::border);
+    g.drawRoundedRectangle (r, 4.0f, 1.0f);
+    if (on) { g.setColour (Colour (0xff1c1a16)); g.setFont (FontOptions (13.0f, Font::bold)); g.drawText (getButtonText(), r, Justification::centred); }
+    else Hardware::engrave (g, getButtonText(), r, Justification::centred, 13.0f, Pal::text);
     if (used && ! on)
     {
         g.setColour (Pal::accent);
@@ -1121,6 +1189,7 @@ MainView::MainView (AuricMaster3Processor& p)
     assistButton.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
     assistButton.setTooltip (u8 ("H\xc3\xb6rt 15 Sekunden zu, stellt alle Module ein und misst danach die Lautheit ein (LERNEN)"));
     assistButton.onClick = [this] { proc.startAssistant(); };
+    assistButton.getProperties().set ("primary", true);
     addAndMakeVisible (assistButton);
 
     undoButton.setColour (juce::TextButton::buttonColourId, Pal::panel);
@@ -1246,6 +1315,7 @@ MainView::MainView (AuricMaster3Processor& p)
     pl.addAndMakeVisible (learnL);
     for (auto* b : { &learnS, &learnL })
     {
+        b->getProperties().set ("primary", true);
         b->setColour (juce::TextButton::buttonColourId, Pal::deep);
         b->setColour (juce::TextButton::textColourOffId, juce::Colours::white);
     }
@@ -1297,6 +1367,7 @@ void MainView::setupKnob (Knob& k, juce::Component& parent, const char* id, cons
     k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 84, 16);
     if (big) k.slider.getProperties().set ("big", true);
+    k.slider.getProperties().set ("cap", (int) Hardware::capColourFor (id).getARGB());   // knob cap colour per section (design only)
     k.slider.setTooltip (tip);
     k.label.setText (name, juce::dontSendNotification);
     k.label.setJustificationType (juce::Justification::centred);
@@ -1326,6 +1397,10 @@ void MainView::setupToggle (Toggle& t, juce::Component& parent, const char* id, 
 {
     t.button.setButtonText (text);
     t.button.setTooltip (tip);
+    // monitoring switches light amber (you are not hearing the master as it will be exported)
+    const String pid (id);
+    if (pid == "bypass" || pid == "compare" || pid.startsWith ("mon_") || pid.endsWith ("_delta") || pid.endsWith ("_solo") || pid.endsWith ("_byp"))
+        t.button.getProperties().set ("lamp", "amber");
     parent.addAndMakeVisible (t.button);
     t.att = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, id, t.button);
 }
@@ -1447,35 +1522,44 @@ void MainView::showPage (int index)
 void MainView::paint (juce::Graphics& g)
 {
     using namespace juce;
-    g.fillAll (Pal::bg);
-    g.setColour (Pal::panel);
-    g.fillRect (0, 0, designWidth, 60);
-    g.setColour (Pal::border);
+    const auto full = getLocalBounds().toFloat();
+    Hardware::brushed (g, full, Pal::bg, 0.0f);
+
+    // header faceplate with logo and engraved group legends
+    auto header = Rectangle<float> (0.0f, 0.0f, (float) designWidth, 60.0f);
+    Hardware::brushed (g, header, Pal::panelHi, 0.0f);
+    g.setColour (Colours::black.withAlpha (0.6f));
     g.drawHorizontalLine (60, 0.0f, (float) designWidth);
-    g.setColour (Pal::deep);
-    g.setFont (FontOptions (24.0f, Font::bold));
-    g.drawText ("AURIC", 20, 10, 90, 28, Justification::centredLeft);
-    g.setColour (Pal::accent);
-    g.drawText ("MASTER 3", 104, 10, 140, 28, Justification::centredLeft);
-    g.setColour (Pal::dim);
-    g.setFont (FontOptions (10.5f, Font::bold));
-    g.drawText ("MIX- & MASTERING-SUITE", 21, 37, 220, 14, Justification::centredLeft);
-    g.drawText ("SNAPSHOT", 263, 6, 120, 12, Justification::centredLeft);
-    g.drawText ("UNDO", 418, 6, 70, 12, Justification::centredLeft);
-    g.drawText ("VERGLEICH", 493, 6, 120, 12, Justification::centredLeft);
-    g.drawText (u8 ("ABH\xc3\x96REN"), 707, 6, 100, 12, Justification::centredLeft);
-    g.drawText ("ASSISTENT", 825, 6, 100, 12, Justification::centredLeft);
+    g.setColour (Colours::white.withAlpha (0.06f));
+    g.drawHorizontalLine (61, 0.0f, (float) designWidth);
+    for (auto p : { Point<float> (8.0f, 12.0f), Point<float> (8.0f, 48.0f), Point<float> ((float) designWidth - 8.0f, 12.0f), Point<float> ((float) designWidth - 8.0f, 48.0f) })
+        Hardware::screw (g, p, 3.6f, p.y * 0.05f);
+    Hardware::engrave (g, "AURIC", { 20.0f, 8.0f, 100.0f, 28.0f }, Justification::centredLeft, 25.0f, Pal::deep);
+    Hardware::engrave (g, "MASTER 3", { 106.0f, 8.0f, 150.0f, 28.0f }, Justification::centredLeft, 25.0f, Pal::accent);
+    Hardware::engrave (g, "MIX- & MASTERING-SUITE", { 21.0f, 36.0f, 230.0f, 14.0f }, Justification::centredLeft, 9.5f, Pal::dim);
+    const struct { const char* t; float x; } legends[] = { { "SNAPSHOT", 263.0f }, { "UNDO", 418.0f }, { "VERGLEICH", 493.0f }, { "ABH\xc3\x96REN", 707.0f }, { "ASSISTENT", 825.0f } };
+    for (auto& l : legends) Hardware::engrave (g, u8 (l.t), { l.x, 5.0f, 120.0f, 12.0f }, Justification::centredLeft, 9.0f, Pal::dim);
 
-    g.setColour (Pal::border);
-    g.drawHorizontalLine (102, 16.0f, 816.0f);
+    // recessed tab strip
+    auto tabs = Rectangle<float> (14.0f, 66.0f, 804.0f, 38.0f);
+    g.setColour (Colours::black.withAlpha (0.45f));
+    g.fillRoundedRectangle (tabs, 5.0f);
+    g.setColour (Colours::white.withAlpha (0.06f));
+    g.drawRoundedRectangle (tabs.translated (0.0f, 1.0f), 5.0f, 1.0f);
 
-    g.setColour (Pal::text);
+    // footer: status display
+    auto footer = Rectangle<float> (12.0f, 705.0f, (float) designWidth - 24.0f, 30.0f);
+    g.setColour (Colours::black);
+    g.fillRoundedRectangle (footer, 5.0f);
+    g.setGradientFill (ColourGradient (Pal::screenTop, 0, footer.getY(), Pal::screenBottom, 0, footer.getBottom(), false));
+    g.fillRoundedRectangle (footer.reduced (2.0f), 4.0f);
+    g.setColour (Colour (0xfff3c47c));
     g.setFont (FontOptions (12.0f));
-    g.drawText (status, 18, 708, undoButton.isVisible() ? 860 : 990, 24, Justification::centredLeft);
+    g.drawText (status, 22, 708, undoButton.isVisible() ? 850 : 980, 24, Justification::centredLeft);
     g.setColour (Pal::dim);
     g.setFont (FontOptions (10.5f));
     const int lat = proc.getLatencySamples();
-    g.drawText (u8 ("v3.0  \xc2\xb7  Latenz ") + String (1000.0 * lat / juce::jmax (1.0, proc.getSampleRate()), 1) + " ms", 1000, 708, 144, 24, Justification::centredRight);
+    g.drawText (u8 ("v3.0  \xc2\xb7  Latenz ") + String (1000.0 * lat / juce::jmax (1.0, proc.getSampleRate()), 1) + " ms", 1000, 708, 140, 24, Justification::centredRight);
 }
 
 void MainView::resized()

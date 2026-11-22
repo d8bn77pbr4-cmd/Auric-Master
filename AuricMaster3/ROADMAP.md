@@ -19,7 +19,7 @@ Arbeitsweise: Jede Iteration durchläuft einen Entscheidungs-Loop (Schritt nach 
 | 4 | Abhören MONO / SIDE | fertig |
 | 4 | Limiter OVERSAMPLING HQ (8x), Standard an | fertig |
 | 4 | weitere nach Kundennutzen (Prüfung: Linear-Phase-EQ zurückgestellt) | offen |
-| 5 | **Analoges Studio-Design** – nur Optik, alle Bedienelemente und die Steuerung bleiben unverändert. Erst wenn alle Funktionen stehen. Eigenständiger Look im Stil echter Studio-Hardware, keine Kopie von Waves/SSL. Bei Beginn: Farbrichtung mit dem Nutzer klären. | offen |
+| 5 | **Analoges Studio-Design** (Konsole Anthrazit, VU-Instrumente; vom Nutzer gewählt) – nur Optik, Bedienelemente und Steuerung unverändert (geprüft: 0 geänderte Layout-/Bedienzeilen) | fertig |
 
 Nicht ohne Rückfrage: Dither, Referenz-Track (vom Nutzer früher abgelehnt).
 
@@ -32,5 +32,6 @@ Nicht ohne Rückfrage: Dither, Referenz-Track (vom Nutzer früher abgelehnt).
 - **DELTA nur für Resonanz und Limiter:** Nur Module, die etwas entfernen, ergeben ein sinnvolles Delta. Es wird zeitlich ausgerichtet, nicht weiterverarbeitet und ist beim Export aus.
 - **Mid/Side als Modus pro Band:** Das deckt die typischen Mastering-Fälle ab, ohne die Regler zu verdoppeln.
 - **HQ-Oversampling als Standard:** Das Aliasing sinkt bei hartem Clipping um 30 dB (−51 auf −81 dB), bei +0,1 ms Latenz und rund 2 % CPU. Über 96 kHz bleibt es bei der normalen Stufe (kein hörbarer Nutzen, aber CPU-Kosten).
+- **Design nur über Zeichenroutinen:** LookAndFeel, Frontplatten, Meter. Layout und Bedienelemente blieben unangetastet (per Diff geprüft). VU-Referenzen: IN 0 VU = −18 LUFS, OUT 0 VU = Lautheitsziel, sodass die Nadel bei 0 bedeutet: "auf Ziel".
 - **Linear-Phase-EQ zurückgestellt:** hohe Latenz (mehrere Tausend Samples) und Vorschwinger bei geringem Nutzen gegenüber dem vorhandenen minimalphasigen EQ.
 - **Presets in realen Einheiten gespeichert:** Sie sind robust gegen spätere Bereichsänderungen. Neue Parameter späterer Versionen erhalten beim Laden ihren Standardwert.

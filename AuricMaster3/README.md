@@ -1,5 +1,7 @@
 # Auric Master 3 – Mix- & Mastering-Suite (VST3 / AU)
 
+![Auric Master 3](screenshot.png)
+
 Neu aufgebaute Version nach einer objektiven Analyse von Auric Master 2. Ziel: ein Plugin, das sich wie ein Profi-Werkzeug verhält und in jeder normalen Plugin-Kette funktioniert – auf Kanälen, Bussen und am Master. Auric Master 2 bleibt unverändert installierbar.
 
 ## Was sich gegenüber Auric Master 2 grundlegend geändert hat
@@ -16,6 +18,13 @@ Neu aufgebaute Version nach einer objektiven Analyse von Auric Master 2. Ziel: e
 | Fehlerhafte Signale (NaN) | Plugin blieb stumm | werden abgefangen, Plugin läuft weiter |
 | Exciter-Aliasing | −37 dB | −79 dB |
 | CPU bei 192 kHz | 36 % | 24 % (Überabtastung passt sich der Samplerate an) |
+
+## Design
+
+Konsolen-Look im Stil echter Studio-Hardware (eigenständiges Design):
+- **Frontplatten und Knöpfe:** gebürstete Anthrazit-Frontplatten mit Schrauben, gravierte Beschriftung, Metallknöpfe mit gerändeltem Rand und farbiger Kappe je Modul (EQ blau, Dynamik grün, Glue rot, Farbe orange, Stereo gelb, Limiter silber, Resonanz violett).
+- **Taster:** beleuchtet; grüne LED = Modul aktiv, bernstein = Abhör-Schalter (ORIGINAL, GLEICH LAUT, MONO, SIDE, DELTA, SOLO), damit man sofort sieht, wenn man nicht den echten Master hört.
+- **Meter:** analoge VU-Instrumente für Eingang, Ausgang (0 VU = Lautheitsziel) und Gain-Reduktion, mit 300-ms-Ballistik und VU-Skalengesetz. Displays aus dunklem Glas, LED-Ketten für die Gain-Reduktion.
 
 ## Signalkette
 

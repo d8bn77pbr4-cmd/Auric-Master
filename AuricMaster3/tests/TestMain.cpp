@@ -310,7 +310,8 @@ namespace
         {
             e->getView().showPage (pg);
             for (int k = 0; k < 90; ++k) { feed (1.0 / 30.0); e->getView().tick (k); pump (1); }
-            auto img = e->createComponentSnapshot (e->getLocalBounds(), true, 1.0f);
+            const float scale = std::getenv ("AM3_SHOT_SCALE") != nullptr ? (float) std::atof (std::getenv ("AM3_SHOT_SCALE")) : 1.0f;
+            auto img = e->createComponentSnapshot (e->getLocalBounds(), true, scale);
             juce::FileOutputStream out (dir.getChildFile (juce::String (names[pg]) + ".png"));
             out.setPosition (0); out.truncate();
             juce::PNGImageFormat().writeImageToStream (img, out);
