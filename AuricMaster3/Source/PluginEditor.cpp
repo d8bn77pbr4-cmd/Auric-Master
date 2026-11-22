@@ -160,18 +160,24 @@ void EqCurveView::refresh()
     const bool lcOn = lcF > 20.5f, hcOn = hcF < 19990.0f;
     if (lcOn) { lc1.setHighPass (fs, lcF, 0.5412); lc2.setHighPass (fs, lcF, 1.3066); }
     if (hcOn) { hc1.setLowPass (fs, hcF, 0.5412); hc2.setLowPass (fs, hcF, 1.3066); }
-    std::array<Biquad, 4> bm, bs;
+    std::array<Biquad, 4> bm, bs, bst;
     sideDiffers = false;
+    anyDyn = false;
     for (int b = 0; b < 4; ++b)
     {
         const auto n = "eq" + String (b + 1);
-        const float f = param ((n + "_freq").toRawUTF8()), g = param ((n + "_gain").toRawUTF8()), q = param ((n + "_q").toRawUTF8());
+        const float f = param ((n + "_freq").toRawUTF8()), gStatic = param ((n + "_gain").toRawUTF8()), q = param ((n + "_q").toRawUTF8());
         const int mode = (int) param ((n + "_mode").toRawUTF8());
-        const float gm = mode == 2 ? 0.0f : g, gsd = mode == 1 ? 0.0f : g;
+        dynOn[(size_t) b] = param ((n + "_dyn").toRawUTF8()) > 0.5f;
+        dynRange[(size_t) b] = param ((n + "_range").toRawUTF8());
+        dynNow[(size_t) b] = proc.eqDynGainDb[(size_t) b].load();
+        anyDyn = anyDyn || dynOn[(size_t) b];
+        const float g = gStatic + dynNow[(size_t) b];   // the curve as it sounds right now
+        const float gm = mode == 2 ? 0.0f : g, gsd = mode == 1 ? 0.0f : g, gms = mode == 2 ? 0.0f : gStatic;
         if (mode != 0 && std::abs (g) > 0.05f) sideDiffers = true;
-        if (b == 0)      { bm[0].setLowShelf (fs, f, q, gm); bs[0].setLowShelf (fs, f, q, gsd); }
-        else if (b == 3) { bm[3].setHighShelf (fs, f, q, gm); bs[3].setHighShelf (fs, f, q, gsd); }
-        else             { bm[(size_t) b].setPeak (fs, f, q, gm); bs[(size_t) b].setPeak (fs, f, q, gsd); }
+        if (b == 0)      { bm[0].setLowShelf (fs, f, q, gm); bs[0].setLowShelf (fs, f, q, gsd); bst[0].setLowShelf (fs, f, q, gms); }
+        else if (b == 3) { bm[3].setHighShelf (fs, f, q, gm); bs[3].setHighShelf (fs, f, q, gsd); bst[3].setHighShelf (fs, f, q, gms); }
+        else             { bm[(size_t) b].setPeak (fs, f, q, gm); bs[(size_t) b].setPeak (fs, f, q, gsd); bst[(size_t) b].setPeak (fs, f, q, gms); }
     }
     Biquad t1, t2, t3;
     t1.setLowShelf (fs, 100.0, 0.7, param ("tone_low"));
@@ -184,10 +190,11 @@ void EqCurveView::refresh()
         double common = t1.magnitudeDb (fs, f) + t2.magnitudeDb (fs, f) + t3.magnitudeDb (fs, f);
         if (lcOn) common += lc1.magnitudeDb (fs, f) + lc2.magnitudeDb (fs, f);
         if (hcOn) common += hc1.magnitudeDb (fs, f) + hc2.magnitudeDb (fs, f);
-        double m = common, s = common;
-        for (int b = 0; b < 4; ++b) { m += bm[(size_t) b].magnitudeDb (fs, f); s += bs[(size_t) b].magnitudeDb (fs, f); }
+        double m = common, s = common, st = common;
+        for (int b = 0; b < 4; ++b) { m += bm[(size_t) b].magnitudeDb (fs, f); s += bs[(size_t) b].magnitudeDb (fs, f); st += bst[(size_t) b].magnitudeDb (fs, f); }
         curveMid[(size_t) i] = (float) m;
         curveSide[(size_t) i] = (float) s;
+        curveStatic[(size_t) i] = (float) st;
     }
     repaint();
 }
@@ -240,6 +247,14 @@ void EqCurveView::paint (juce::Graphics& g)
         }
         return p;
     };
+    if (anyDyn)
+    {
+        Path st = curvePath (curveStatic), dashed;
+        const float dash[2] = { 4.0f, 4.0f };
+        PathStrokeType (1.2f).createDashedStroke (dashed, st, dash, 2);
+        g.setColour (Colours::white.withAlpha (0.35f));
+        g.fillPath (dashed);
+    }
     auto mid = curvePath (curveMid);
     Path fillP (mid);
     fillP.lineTo (a.getRight(), gainToY (0.0f));
@@ -280,6 +295,15 @@ void EqCurveView::paint (juce::Graphics& g)
         const int mode = (int) param (("eq" + String (i + 1) + "_mode").toRawUTF8());
         const bool hot = i == hovered || i == dragging;
         const float r = hot ? 9.0f : 7.5f;
+        if (dynOn[(size_t) i])
+        {
+            // dynamic range: line from the static gain to static + RANGE, dot = current dynamic gain
+            const float y0 = pos.y, y1 = gainToY (nodes[(size_t) i].gain + dynRange[(size_t) i]), yNow = gainToY (nodes[(size_t) i].gain + dynNow[(size_t) i]);
+            g.setColour (Pal::toneLine.withAlpha (0.8f * alpha));
+            g.drawLine (pos.x, y0, pos.x, y1, 2.0f);
+            g.drawLine (pos.x - 5.0f, y1, pos.x + 5.0f, y1, 2.0f);
+            g.fillEllipse (pos.x - 3.5f, yNow - 3.5f, 7.0f, 7.0f);
+        }
         g.setColour (modeColour[mode].withAlpha ((std::abs (nodes[(size_t) i].gain) > 0.05f ? 1.0f : 0.55f) * alpha));
         g.fillEllipse (pos.x - r, pos.y - r, 2 * r, 2 * r);
         g.setColour (Pal::screenBottom);
@@ -828,12 +852,12 @@ void LoudnessPanel::paint (juce::Graphics& g)
     }
 
     // history
-    auto hist = Rectangle<float> (14.0f, 226.0f, (float) W - 28.0f, 104.0f);
+    auto hist = Rectangle<float> (14.0f, 226.0f, (float) W - 28.0f, 80.0f);
     fillScreen (g, hist);
     auto ha = hist.reduced (8.0f, 10.0f).withTrimmedTop (8.0f);
     auto hy = [&] (float l) { return jmap (jlimit (-40.0f, 0.0f, l), -40.0f, 0.0f, ha.getBottom(), ha.getY()); };
     g.setFont (FontOptions (9.5f));
-    for (float l = -36.0f; l <= -4.0f; l += 8.0f)
+    for (float l = -36.0f; l <= -12.0f; l += 12.0f)
     {
         g.setColour (Colours::white.withAlpha (0.06f));
         g.drawHorizontalLine ((int) hy (l), ha.getX(), ha.getRight());
@@ -873,13 +897,13 @@ void LoudnessPanel::paint (juce::Graphics& g)
     // sample-peak meters in / out
     g.setColour (Pal::dim);
     g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText ("PEAK EIN", 16, 340, 80, 12, Justification::centredLeft);
-    g.drawText ("PEAK AUS", W / 2 + 4, 340, 80, 12, Justification::centredLeft);
+    g.drawText ("PEAK EIN", 16, 316, 80, 12, Justification::centredLeft);
+    g.drawText ("PEAK AUS", W / 2 + 4, 316, 80, 12, Justification::centredLeft);
     for (int i = 0; i < 4; ++i)
     {
         const float x0 = i < 2 ? 16.0f : (float) W * 0.5f + 4.0f;
         const float w = (float) W * 0.5f - 20.0f;
-        auto b = Rectangle<float> (x0, 356.0f + (float) (i % 2) * 10.0f, w, 7.0f);
+        auto b = Rectangle<float> (x0, 332.0f + (float) (i % 2) * 10.0f, w, 7.0f);
         g.setColour (Pal::track);
         g.fillRoundedRectangle (b, 3.0f);
         const float frac = jlimit (0.0f, 1.0f, (peakS[(size_t) i] + 60.0f) / 60.0f), hold = jlimit (0.0f, 1.0f, (peakHold[(size_t) i] + 60.0f) / 60.0f);
@@ -890,26 +914,26 @@ void LoudnessPanel::paint (juce::Graphics& g)
     }
     g.setColour (Pal::text);
     g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText (dbText (jmax (peakHold[0], peakHold[1])) + " dB", 16, 376, 120, 12, Justification::centredLeft);
-    g.drawText (dbText (jmax (peakHold[2], peakHold[3])) + " dB", W / 2 + 4, 376, 120, 12, Justification::centredLeft);
+    g.drawText (dbText (jmax (peakHold[0], peakHold[1])) + " dB", 16, 352, 120, 12, Justification::centredLeft);
+    g.drawText (dbText (jmax (peakHold[2], peakHold[3])) + " dB", W / 2 + 4, 352, 120, 12, Justification::centredLeft);
 
     // input loudness, drive
     const float inI = proc.inMeter.getIntegrated();
     g.setColour (Pal::dim);
-    g.drawText ("EINGANG", 16, 398, 120, 12, Justification::centredLeft);
-    g.drawText (limOn ? "DRIVE (FEST)" : "LIMITER", W / 2 + 4, 398, 140, 12, Justification::centredLeft);
+    g.drawText ("EINGANG", 16, 374, 120, 12, Justification::centredLeft);
+    g.drawText (limOn ? "DRIVE (FEST)" : "LIMITER", W / 2 + 4, 374, 140, 12, Justification::centredLeft);
     g.setColour (Pal::text);
     g.setFont (FontOptions (15.0f, Font::bold));
-    g.drawText ((inI > -70.0f ? String (inI, 1) : u8 ("\xe2\x80\x93")) + " LUFS", 16, 412, 140, 20, Justification::centredLeft);
-    g.drawText (limOn ? dbText (raw (proc, "lim_drive")) + " dB" : String ("aus"), W / 2 + 4, 412, 140, 20, Justification::centredLeft);
+    g.drawText ((inI > -70.0f ? String (inI, 1) : u8 ("\xe2\x80\x93")) + " LUFS", 16, 388, 140, 20, Justification::centredLeft);
+    g.drawText (limOn ? dbText (raw (proc, "lim_drive")) + " dB" : String ("aus"), W / 2 + 4, 388, 140, 20, Justification::centredLeft);
 
     // correlation
     g.setColour (Pal::dim);
     g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText ("KORRELATION", 16, 442, 140, 12, Justification::centredLeft);
+    g.drawText ("KORRELATION", 16, 418, 140, 12, Justification::centredLeft);
     g.setColour (corrS < 0.0f ? Pal::warn : Pal::text);
-    g.drawText (String (corrS, 2), W - 80, 442, 64, 12, Justification::centredRight);
-    auto bar = Rectangle<float> (16.0f, 458.0f, (float) W - 32.0f, 8.0f);
+    g.drawText (String (corrS, 2), W - 80, 418, 64, 12, Justification::centredRight);
+    auto bar = Rectangle<float> (16.0f, 434.0f, (float) W - 32.0f, 8.0f);
     g.setColour (Pal::track);
     g.fillRoundedRectangle (bar, 4.0f);
     const float mx = bar.getX() + bar.getWidth() * (jlimit (-1.0f, 1.0f, corrS) + 1.0f) * 0.5f;
@@ -920,11 +944,11 @@ void LoudnessPanel::paint (juce::Graphics& g)
 
     // gain reduction
     g.setColour (Pal::dim);
-    g.drawText ("GAIN-REDUKTION", 16, 480, 160, 12, Justification::centredLeft);
+    g.drawText ("GAIN-REDUKTION", 16, 456, 160, 12, Justification::centredLeft);
     const String names[6] = { "TIEFEN", "MITTEN", u8 ("H\xc3\x96HEN"), "GLUE", "CLIPPER", "LIMITER" };
     for (int i = 0; i < 6; ++i)
     {
-        const float y = 498.0f + (float) i * 21.0f;
+        const float y = 474.0f + (float) i * 19.0f;
         g.setColour (Pal::dim);
         g.setFont (FontOptions (10.0f, Font::bold));
         g.drawText (names[i], 16, (int) y, 64, 14, Justification::centredLeft);
@@ -965,6 +989,27 @@ void TabButton::paintButton (juce::Graphics& g, bool highlighted, bool)
     }
 }
 
+void ArrowIconButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
+{
+    using namespace juce;
+    auto r = getLocalBounds().toFloat().reduced (1.0f);
+    g.setColour (down ? Pal::light : Pal::panel);
+    g.fillRoundedRectangle (r, 6.0f);
+    g.setColour (highlighted && isEnabled() ? Pal::accent : Pal::border);
+    g.drawRoundedRectangle (r, 6.0f, 1.2f);
+    const auto c = r.getCentre();
+    const float rad = r.getHeight() * 0.24f;
+    Path arc;
+    arc.addCentredArc (c.x, c.y + 2.0f, rad, rad, 0.0f, redo ? -2.2f : 2.2f, 0.0f, true);
+    const auto tip = arc.getCurrentPosition();
+    g.setColour (isEnabled() ? Pal::accent : Pal::track);
+    g.strokePath (arc, PathStrokeType (2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+    Path head;
+    const float s = 4.5f, dir = redo ? 1.0f : -1.0f;
+    head.addTriangle (tip.x - s * dir * 0.2f, tip.y - s, tip.x + s * dir * 1.1f, tip.y + 0.5f, tip.x - s * dir * 0.2f, tip.y + s);
+    g.fillPath (head);
+}
+
 void SnapButton::paintButton (juce::Graphics& g, bool highlighted, bool)
 {
     auto r = getLocalBounds().toFloat().reduced (1.0f);
@@ -998,6 +1043,28 @@ MainView::MainView (AuricMaster3Processor& p)
         snaps[(size_t) i]->onClick = [this, i] { proc.selectSnapshot (i); };
         addAndMakeVisible (*snaps[(size_t) i]);
     }
+    undoArrow.setTooltip (u8 ("R\xc3\xbc" "ckg\xc3\xa4ngig (Cmd/Strg + Z)"));
+    redoArrow.setTooltip (u8 ("Wiederherstellen (Cmd/Strg + Umschalt + Z)"));
+    undoArrow.onClick = [this] { proc.undo(); };
+    redoArrow.onClick = [this] { proc.redo(); };
+    addAndMakeVisible (undoArrow);
+    addAndMakeVisible (redoArrow);
+    presetBox.setTooltip (u8 ("Presets: Werk-Presets als Startpunkt, eigene Presets unter Dokumente/Auric Master 3/Presets. * = ge\xc3\xa4ndert"));
+    presetBox.beforePopup = [this] { rebuildPresetList(); };
+    presetBox.onChange = [this] { if (presetBox.getSelectedId() > 0) presetChosen (presetBox.getSelectedId()); };
+    presetPrev.setTooltip (u8 ("Vorheriges Preset"));
+    presetNext.setTooltip (u8 ("N\xc3\xa4" "chstes Preset"));
+    presetPrev.onClick = [this] { stepPreset (-1); };
+    presetNext.onClick = [this] { stepPreset (1); };
+    presetMenu.setTooltip (u8 ("Preset speichern, l\xc3\xb6schen, Ordner \xc3\xb6" "ffnen"));
+    presetMenu.setColour (juce::TextButton::buttonColourId, Pal::panel);
+    presetMenu.setColour (juce::TextButton::textColourOffId, Pal::accent);
+    presetMenu.onClick = [this] { showPresetMenu(); };
+    for (juce::Component* c : { (juce::Component*) &presetBox, (juce::Component*) &presetPrev, (juce::Component*) &presetNext, (juce::Component*) &presetMenu })
+        addAndMakeVisible (c);
+    rebuildPresetList();
+    setWantsKeyboardFocus (true);
+
     setupToggle (matchButton, *this, "compare", "GLEICH LAUT", u8 ("Nur zum Vergleichen: die lautere Version wird leiser gemacht. Beim Export automatisch aus."));
     setupToggle (originalButton, *this, "bypass", "ORIGINAL", u8 ("Original h\xc3\xb6ren (Bypass, latenzausgeglichen). Entspricht dem Bypass-Knopf der DAW."));
 
@@ -1067,7 +1134,12 @@ MainView::MainView (AuricMaster3Processor& p)
         setupKnob (eqGain[(size_t) b], pe, (n + "_gain").toRawUTF8(), "GAIN", u8 ("Anhebung / Absenkung"));
         setupKnob (eqFreq[(size_t) b], pe, (n + "_freq").toRawUTF8(), "FREQ", "Frequenz");
         setupKnob (eqQ[(size_t) b], pe, (n + "_q").toRawUTF8(), "Q", u8 ("G\xc3\xbcte: klein = breit, gro\xc3\x9f = schmal"));
+        setupToggle (eqDyn[(size_t) b], pe, (n + "_dyn").toRawUTF8(), "DYN", u8 ("Dynamisches Band: arbeitet nur, wenn dieser Frequenzbereich \xc3\xbc" "ber THRESHOLD liegt"));
+        setupKnob (eqThr[(size_t) b], pe, (n + "_thr").toRawUTF8(), "THRESHOLD", u8 ("Ab diesem Pegel des Bandes (dB RMS) greift die Dynamik"));
+        setupKnob (eqRange[(size_t) b], pe, (n + "_range").toRawUTF8(), "RANGE", u8 ("Maximale zus\xc3\xa4tzliche Absenkung (-) oder Anhebung (+), erreicht bei 10 dB \xc3\xbc" "ber THRESHOLD"));
     }
+    setupKnob (eqDynAtt, pe, "eq_dyn_att", "DYN ATTACK", u8 ("Einsatzzeit aller dynamischen B\xc3\xa4nder"));
+    setupKnob (eqDynRel, pe, "eq_dyn_rel", "DYN RELEASE", u8 ("R\xc3\xbc" "ckstellzeit aller dynamischen B\xc3\xa4nder"));
 
     // DYNAMIK
     auto& pd = pages[dyn];
@@ -1154,9 +1226,9 @@ MainView::MainView (AuricMaster3Processor& p)
     // group frames and notes
     ps.groups = { { { 0, 202, 250, 186 }, "KLANG" }, { { 266, 202, 250, 186 }, "CHARAKTER" },
                   { { 532, 202, 268, 186 }, "PEGEL" }, { { 0, 402, 800, 188 }, u8 ("LAUTHEIT") } };
-    pe.groups = { { { 0, 314, 112, 276 }, "FILTER" } };
+    pe.groups = { { { 0, 244, 112, 346 }, "FILTER / DYN" } };
     const String bandTitles[4] = { u8 ("BAND 1 \xc2\xb7 LOW SHELF"), u8 ("BAND 2 \xc2\xb7 GLOCKE"), u8 ("BAND 3 \xc2\xb7 GLOCKE"), u8 ("BAND 4 \xc2\xb7 HIGH SHELF") };
-    for (int b = 0; b < 4; ++b) pe.groups.push_back ({ { 124 + b * 169, 314, 157, 276 }, bandTitles[b] });
+    for (int b = 0; b < 4; ++b) pe.groups.push_back ({ { 124 + b * 169, 244, 157, 346 }, bandTitles[b] });
     pd.groups = { { { 0, 252, 200, 338 }, bandTitle[0] }, { { 210, 252, 200, 338 }, bandTitle[1] }, { { 420, 252, 200, 338 }, bandTitle[2] },
                   { { 630, 252, 170, 338 }, "WEICHE" } };
     pd.notes = { { { 642, 500, 150, 80 }, u8 ("Linien in der Grafik ziehen = Weiche verschieben.") } };
@@ -1227,6 +1299,91 @@ void MainView::learnClicked()
     else proc.startLoudnessLearn (20.0f);
 }
 
+void MainView::rebuildPresetList()
+{
+    presetBox.clear (juce::dontSendNotification);
+    presetBox.addSectionHeading ("WERK-PRESETS");
+    const auto names = AuricMaster3Processor::getFactoryPresetNames();
+    for (int i = 0; i < names.size(); ++i) presetBox.addItem (names[i], 1 + i);
+    userPresets = proc.getUserPresetFiles();
+    presetBox.addSectionHeading ("EIGENE PRESETS");
+    if (userPresets.isEmpty()) presetBox.addItem (u8 ("(noch keine \xe2\x80\x93 \xc3\xbc" "ber \xc2\xb7\xc2\xb7\xc2\xb7 speichern)"), 999);
+    presetBox.setItemEnabled (999, false);
+    for (int i = 0; i < userPresets.size(); ++i) presetBox.addItem (userPresets[i].getFileNameWithoutExtension(), 1000 + i);
+    shownPreset = {};
+}
+
+void MainView::presetChosen (int id)
+{
+    if (id >= 1 && id < 999) proc.loadFactoryPreset (id - 1);
+    else if (id >= 1000 && id - 1000 < userPresets.size()) proc.loadPresetFile (userPresets[id - 1000]);
+    shownPreset = {};
+}
+
+void MainView::stepPreset (int delta)
+{
+    rebuildPresetList();
+    std::vector<int> order;
+    const int nf = AuricMaster3Processor::getFactoryPresetNames().size();
+    for (int i = 0; i < nf; ++i) order.push_back (1 + i);
+    for (int i = 0; i < userPresets.size(); ++i) order.push_back (1000 + i);
+    int cur = -1;
+    for (size_t k = 0; k < order.size(); ++k)
+    {
+        const bool match = order[k] < 1000 ? proc.getFactoryPresetIndex() == order[k] - 1
+                                           : (proc.getFactoryPresetIndex() < 0 && userPresets[order[k] - 1000].getFileNameWithoutExtension() == juce::File::createLegalFileName (proc.getPresetName()));
+        if (match) cur = (int) k;
+    }
+    const int n = (int) order.size();
+    const int next = cur < 0 ? (delta > 0 ? 0 : n - 1) : ((cur + delta) % n + n) % n;
+    presetChosen (order[(size_t) next]);
+}
+
+void MainView::savePresetDialog()
+{
+    auto* w = new juce::AlertWindow (u8 ("Preset speichern"), u8 ("Name des Presets (gleicher Name = \xc3\xbc" "berschreiben):"), juce::MessageBoxIconType::NoIcon, this);
+    w->addTextEditor ("name", proc.getFactoryPresetIndex() < 0 ? proc.getPresetName() : String ("Mein Preset"));
+    w->addButton ("Speichern", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Abbrechen", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, w] (int result)
+    {
+        if (result == 1 && w->getTextEditorContents ("name").trim().isNotEmpty())
+            proc.saveUserPreset (w->getTextEditorContents ("name"));
+        shownPreset = {};
+    }), true);
+}
+
+void MainView::showPresetMenu()
+{
+    juce::PopupMenu m;
+    m.addItem (1, u8 ("Preset speichern \xe2\x80\xa6"));
+    m.addItem (2, u8 ("Dieses Preset l\xc3\xb6schen"), proc.getFactoryPresetIndex() < 0);
+    m.addSeparator();
+    m.addItem (3, u8 ("Preset-Ordner \xc3\xb6" "ffnen"));
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (presetMenu), [this] (int r)
+    {
+        if (r == 1) savePresetDialog();
+        if (r == 2)
+        {
+            const auto file = proc.getUserPresetDirectory().getChildFile (juce::File::createLegalFileName (proc.getPresetName()) + ".am3preset");
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withTitle (u8 ("Preset l\xc3\xb6schen"))
+                                              .withMessage (u8 ("\xe2\x80\x9e") + proc.getPresetName() + u8 ("\xe2\x80\x9c wirklich l\xc3\xb6schen?"))
+                                              .withButton (u8 ("L\xc3\xb6schen")).withButton ("Abbrechen").withAssociatedComponent (this),
+                                          [this, file] (int b) { if (b == 1) { proc.deleteUserPreset (file); rebuildPresetList(); } });
+        }
+        if (r == 3) { proc.getUserPresetDirectory().createDirectory(); proc.getUserPresetDirectory().startAsProcess(); }
+    });
+}
+
+bool MainView::keyPressed (const juce::KeyPress& key)
+{
+    const auto mods = key.getModifiers();
+    if (key.getKeyCode() == 'Z' || key.getKeyCode() == 'z')
+        if (mods.isCommandDown()) { if (mods.isShiftDown()) proc.redo(); else proc.undo(); return true; }
+    if ((key.getKeyCode() == 'Y' || key.getKeyCode() == 'y') && mods.isCommandDown()) { proc.redo(); return true; }
+    return false;
+}
+
 void MainView::showPage (int index)
 {
     currentPage = juce::jlimit (0, numPages - 1, index);
@@ -1254,7 +1411,8 @@ void MainView::paint (juce::Graphics& g)
     g.setColour (Pal::dim);
     g.setFont (FontOptions (10.5f, Font::bold));
     g.drawText ("MIX- & MASTERING-SUITE", 21, 37, 220, 14, Justification::centredLeft);
-    g.drawText ("SNAPSHOT", 301, 6, 120, 12, Justification::centredLeft);
+    g.drawText ("SNAPSHOT", 263, 6, 120, 12, Justification::centredLeft);
+    g.drawText ("UNDO", 418, 6, 70, 12, Justification::centredLeft);
 
     g.setColour (Pal::border);
     g.drawHorizontalLine (102, 16.0f, 816.0f);
@@ -1270,16 +1428,22 @@ void MainView::paint (juce::Graphics& g)
 
 void MainView::resized()
 {
-    for (int i = 0; i < 4; ++i) snaps[(size_t) i]->setBounds (300 + i * 38, 22, 32, 28);
-    matchButton.button.setBounds (470, 16, 120, 30);
-    originalButton.button.setBounds (598, 16, 104, 30);
-    genre.label.setBounds (716, 16, 54, 30);
-    genre.box.setBounds (776, 16, 150, 30);
+    for (int i = 0; i < 4; ++i) snaps[(size_t) i]->setBounds (262 + i * 36, 22, 32, 28);
+    undoArrow.setBounds (416, 22, 30, 28);
+    redoArrow.setBounds (450, 22, 30, 28);
+    matchButton.button.setBounds (492, 16, 110, 30);
+    originalButton.button.setBounds (608, 16, 94, 30);
+    genre.label.setBounds (706, 16, 50, 30);
+    genre.box.setBounds (760, 16, 166, 30);
+    presetPrev.setBounds (834, 72, 22, 26);
+    presetBox.setBounds (860, 68, 210, 32);
+    presetNext.setBounds (1074, 72, 22, 26);
+    presetMenu.setBounds (1100, 68, 44, 32);
     assistButton.setBounds (940, 13, 204, 36);
     const int tabW[numPages] = { 96, 86, 112, 96, 154, 112, 144 };
     for (int i = 0, x = 16; i < numPages; x += tabW[i], ++i) tabs[(size_t) i]->setBounds (x, 68, tabW[i], 34);
     for (auto& pg : pages) pg.setBounds (16, 110, 800, 590);
-    loudness.setBounds (832, 68, 312, 632);
+    loudness.setBounds (832, 106, 312, 594);
     undoButton.setBounds (880, 707, 116, 26);
 
     layoutSimple();
@@ -1315,16 +1479,21 @@ void MainView::layoutSimple()
 void MainView::layoutEq()
 {
     eqOn.button.setBounds (0, 0, 120, 28);
-    eqCurve.setBounds (0, 36, 800, 266);
-    placeKnob (lowCut, { 8, 336, 96, 112 });
-    placeKnob (highCut, { 8, 456, 96, 112 });
+    eqCurve.setBounds (0, 36, 800, 198);
+    placeKnob (lowCut, { 8, 266, 96, 80 });
+    placeKnob (highCut, { 8, 346, 96, 80 });
+    placeKnob (eqDynAtt, { 8, 428, 96, 80 });
+    placeKnob (eqDynRel, { 8, 508, 96, 80 });
     for (int b = 0; b < 4; ++b)
     {
         const int x = 124 + b * 169;
-        placeCombo (eqMode[(size_t) b], { x + 12, 338, 133, 46 });
-        placeKnob (eqGain[(size_t) b], { x + 24, 390, 109, 102 });
-        placeKnob (eqFreq[(size_t) b], { x + 4, 494, 76, 92 });
-        placeKnob (eqQ[(size_t) b], { x + 78, 494, 76, 92 });
+        placeCombo (eqMode[(size_t) b], { x + 8, 264, 94, 46 });
+        eqDyn[(size_t) b].button.setBounds (x + 106, 282, 44, 28);
+        placeKnob (eqGain[(size_t) b], { x + 30, 314, 97, 90 });
+        placeKnob (eqFreq[(size_t) b], { x + 4, 406, 76, 88 });
+        placeKnob (eqQ[(size_t) b], { x + 78, 406, 76, 88 });
+        placeKnob (eqThr[(size_t) b], { x + 4, 496, 76, 88 });
+        placeKnob (eqRange[(size_t) b], { x + 78, 496, 76, 88 });
     }
 }
 
@@ -1426,6 +1595,19 @@ void MainView::tick (int frame)
     }
     for (auto& t : tabs)
         if (t->on != nullptr && (t->on->load() > 0.5f) != t->shownOn) { t->shownOn = t->on->load() > 0.5f; t->repaint(); }
+    undoArrow.setEnabled (proc.canUndo());
+    redoArrow.setEnabled (proc.canRedo());
+    if (frame % 6 == 0)
+    {
+        const String txt = proc.getPresetName() + (proc.isPresetModified() ? " *" : "");
+        if (txt != shownPreset && ! presetBox.isPopupActive()) { shownPreset = txt; presetBox.setText (txt, juce::dontSendNotification); }
+    }
+    for (int b = 0; b < 4; ++b)
+    {
+        const float a = eqDyn[(size_t) b].button.getToggleState() ? 1.0f : 0.4f;
+        for (auto* k : { &eqThr[(size_t) b], &eqRange[(size_t) b] })
+            if (! juce::exactlyEqual (k->slider.getAlpha(), a)) { k->slider.setAlpha (a); k->label.setAlpha (a); }
+    }
 
     // LERNEN buttons
     const int ls = proc.getLearnState();
@@ -1471,7 +1653,7 @@ void MainView::tick (int frame)
         {
             const char* hints[numPages] = {
                 "Neu eingef\xc3\xbcgt ver\xc3\xa4ndert Auric Master 3 nichts. Module oben einschalten, ASSISTENT nutzen oder LERNEN f\xc3\xbcr ein Lautheitsziel.",
-                "Punkte ziehen = Frequenz und Gain  \xc2\xb7  Mausrad = G\xc3\xbcte (Q)  \xc2\xb7  Doppelklick = Band zur\xc3\xbc" "cksetzen",
+                "Punkte ziehen = Frequenz und Gain  \xc2\xb7  Mausrad = Q  \xc2\xb7  DYN: gelbe Linie = Range, Punkt = aktuelle dynamische \xc3\x84nderung",
                 "Linien ziehen = Weiche verschieben  \xc2\xb7  Balken = Gain-Reduktion je Band  \xc2\xb7  SOLO zum Abh\xc3\xb6ren",
                 "Kennlinie: gelber Punkt = aktueller Pegel. Rechts die Gain-Reduktion der letzten 10 s.",
                 "Vektorskop: senkrecht = mono, breit = stereo. Korrelation unter 0 bedeutet Phasenprobleme.",

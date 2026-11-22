@@ -21,11 +21,11 @@ namespace Targets
 //   -> MIX (parallel, dry/wet) -> LIMITER (drive, clipper, true-peak limiter) -> Output
 // Processing is deterministic: no gain riding, no level-following thresholds. Loudness targets are reached
 // with LERNEN, which measures once and then holds a fixed drive.
-class AuricMaster3Processor : public juce::AudioProcessor, private juce::Timer
+class AuricMaster3Processor : public juce::AudioProcessor, private juce::Timer, private juce::AudioProcessorParameter::Listener
 {
 public:
     AuricMaster3Processor();
-    ~AuricMaster3Processor() override { stopTimer(); }
+    ~AuricMaster3Processor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -54,6 +54,28 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     juce::AudioProcessorValueTreeState apvts;
+
+    // ---- undo / redo of user actions (editor gestures, presets, assistant, LERNEN); automation is not recorded ----
+    void beginEdit();
+    void endEdit();
+    void undo();
+    void redo();
+    bool canUndo() const { return ! undoStack.empty(); }
+    bool canRedo() const { return ! redoStack.empty(); }
+    int getUndoDepth() const { return (int) undoStack.size(); }
+
+    // ---- presets (message thread) ----
+    static juce::StringArray getFactoryPresetNames();
+    void loadFactoryPreset (int index);
+    void setUserPresetDirectory (const juce::File& dir) { userPresetDir = dir; }
+    juce::File getUserPresetDirectory() const { return userPresetDir; }
+    juce::Array<juce::File> getUserPresetFiles() const;
+    bool saveUserPreset (const juce::String& name);
+    bool loadPresetFile (const juce::File& file);
+    bool deleteUserPreset (const juce::File& file);
+    juce::String getPresetName() const { return presetName; }
+    int getFactoryPresetIndex() const { return factoryIndex; }   // -1 = user preset
+    bool isPresetModified() const;
 
     // ---- snapshots A-D (message thread) ----
     void selectSnapshot (int slot);
@@ -87,6 +109,7 @@ public:
     std::atomic<float> grLimitPeak { 0.0f }, grClipPeak { 0.0f }, grGluePeak { 0.0f };   // peak since the editor last read them (exchange)
     std::atomic<float> glueInDb { -100.0f };                         // glue detector level (for the transfer curve)
     std::array<std::atomic<float>, 2> inPeak {}, outPeak {};         // sample peak since last read (exchange)
+    std::array<std::atomic<float>, 4> eqDynGainDb {};                 // current dynamic EQ gain per band (display)
     std::atomic<float> correlation { 1.0f }, compareGainDb { 0.0f };
     std::atomic<int> latencySamplesNow { 0 };
     std::atomic<bool> analyserWanted { false };   // editor open: run the spectrum analysis even with RESONANZ off
@@ -105,6 +128,20 @@ public:
 
 private:
     enum ConfigBits { cfgRes = 1, cfgLim = 2 };
+
+    void parameterValueChanged (int, float) override {}
+    void parameterGestureChanged (int index, bool starting) override;
+    std::vector<float> captureValues() const;
+    void restoreValues (const std::vector<float>& values);
+    bool differs (const std::vector<float>& a, const std::vector<float>& b) const;
+    void applyPresetValues (const std::function<float (const juce::String& id, float defaultValue)>& valueFor);
+    std::vector<bool> excluded;   // monitoring / context parameters: not part of presets or undo
+    std::vector<std::vector<float>> undoStack, redoStack;
+    std::vector<float> pendingEdit, presetValues;
+    int editDepth = 0, activeGestures = 0, factoryIndex = 0;
+    bool restoring = false;
+    juce::File userPresetDir;
+    juce::String presetName { "Neutral (alles aus)" };
 
     void timerCallback() override;
     void processChunk (juce::AudioBuffer<float>& main, int chans);
@@ -142,6 +179,11 @@ private:
     Biquad toneLowB, toneMidB, toneHighB;
     std::array<float, 3> toneS {};
     float lowCutLast = -1.0f, highCutLast = -1.0f;
+    // dynamic EQ
+    std::array<Biquad, 4> eqDet;
+    std::array<float, 4> eqDetLevel {}, eqDynDb {}, eqDetFreqLast {}, eqDetQLast {}, eqTotalLast {};
+    std::array<double, 4> eqDetPow {};
+    int lastCtrlLen = ctrl;
 
     // crossover + multiband
     LR4Split split1, split2;

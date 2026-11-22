@@ -69,8 +69,10 @@ private:
     const bool interactive;
     std::array<Node, 4> nodes;
     std::array<float, ResonanceSuppressor::numDisplayPoints> spectrum {}, reduction {};
-    std::array<float, points> curveMid {}, curveSide {};
-    bool sideDiffers = false, moduleOn = true;
+    std::array<float, points> curveMid {}, curveSide {}, curveStatic {};
+    std::array<bool, 4> dynOn {};
+    std::array<float, 4> dynNow {}, dynRange {};
+    bool sideDiffers = false, moduleOn = true, anyDyn = false;
     int hovered = -1, dragging = -1;
 };
 
@@ -170,6 +172,24 @@ public:
     bool shownOn = false;
 };
 
+// curved arrow icon (undo / redo)
+class ArrowIconButton : public juce::Button
+{
+public:
+    ArrowIconButton (const juce::String& name, bool redoDirection) : juce::Button (name), redo (redoDirection) {}
+    void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+private:
+    bool redo;
+};
+
+// preset list that refreshes itself just before it opens (user presets may change on disk)
+class PresetBox : public juce::ComboBox
+{
+public:
+    std::function<void()> beforePopup;
+    void showPopup() override { if (beforePopup) beforePopup(); juce::ComboBox::showPopup(); }
+};
+
 class SnapButton : public juce::Button
 {
 public:
@@ -190,6 +210,7 @@ public:
     void resized() override;
     void tick (int frame);   // 30 Hz
     void showPage (int index);
+    bool keyPressed (const juce::KeyPress&) override;
 
 private:
     void setupKnob (Knob&, juce::Component& parent, const char* id, const juce::String& name, const juce::String& tip, bool big = false);
@@ -205,11 +226,22 @@ private:
     void layoutLimit();
     void layoutRes();
     void learnClicked();
+    void rebuildPresetList();
+    void presetChosen (int id);
+    void stepPreset (int delta);
+    void showPresetMenu();
+    void savePresetDialog();
 
     AuricMaster3Processor& proc;
     int currentPage = 0;
 
     // header
+    ArrowIconButton undoArrow { "undo", false }, redoArrow { "redo", true };
+    PresetBox presetBox;
+    juce::ArrowButton presetPrev { "prev", 0.5f, Pal::accent }, presetNext { "next", 0.0f, Pal::accent };
+    juce::TextButton presetMenu { juce::String::fromUTF8 ("\xc2\xb7\xc2\xb7\xc2\xb7") };
+    juce::Array<juce::File> userPresets;
+    juce::String shownPreset;
     std::array<std::unique_ptr<SnapButton>, 4> snaps;
     Toggle matchButton, originalButton;
     juce::TextButton assistButton { "ASSISTENT" };
@@ -236,9 +268,10 @@ private:
     // EQ
     Toggle eqOn;
     EqCurveView eqCurve;
-    Knob lowCut, highCut;
-    std::array<Knob, 4> eqFreq, eqGain, eqQ;
+    Knob lowCut, highCut, eqDynAtt, eqDynRel;
+    std::array<Knob, 4> eqFreq, eqGain, eqQ, eqThr, eqRange;
     std::array<Combo, 4> eqMode;
+    std::array<Toggle, 4> eqDyn;
 
     // DYNAMIK
     Toggle dynOn;

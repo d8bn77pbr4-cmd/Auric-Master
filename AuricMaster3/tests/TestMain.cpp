@@ -277,11 +277,14 @@ namespace
         setP (p, "lim_drive", 8.0f); setP (p, "clip", 30.0f);
     }
 
-    int shots (const char* dirName, bool withAssistant)
+    int shots (const char* dirName, bool withAssistant, bool dynEq = false)
     {
         const juce::File dir (juce::File::getCurrentWorkingDirectory().getChildFile (dirName));
         dir.createDirectory();
-        auto p = makeProc();
+        auto p = makeProc (48000.0, [dynEq] (AuricMaster3Processor& q) {
+            if (! dynEq) return;
+            setP (q, "eq2_freq", 300.0f); setP (q, "eq2_dyn", 1.0f); setP (q, "eq2_thr", -40.0f); setP (q, "eq2_range", -5.0f);
+            setP (q, "eq3_freq", 3000.0f); setP (q, "eq3_gain", 2.0f); setP (q, "eq3_dyn", 1.0f); setP (q, "eq3_thr", -50.0f); setP (q, "eq3_range", -6.0f); });
         std::vector<float> l, r;
         material (l, r, -24.0f, 0.06f, 21);
         size_t cursor = 0;
@@ -321,7 +324,8 @@ namespace
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
-    if (argc >= 3 && juce::String (argv[1]) == "--shots") return shots (argv[2], argc >= 4 && juce::String (argv[3]) == "assist");
+    if (argc >= 3 && juce::String (argv[1]) == "--shots")
+        return shots (argv[2], argc >= 4 && juce::String (argv[3]) == "assist", argc >= 4 && juce::String (argv[3]) == "dyneq");
     const double fs = 48000.0;
 
     // ---------------- loudness meter (ITU-R BS.1770-4 / EBU Tech 3341, 3342) ----------------
@@ -454,6 +458,43 @@ int main (int argc, char** argv)
         check (p->getLearnState() == AuricMaster3Processor::learnFailed, "LERNEN unreachable target", "%s", p->getLearnStatus().toRawUTF8());
     }
 
+    // ---------------- dynamic EQ ----------------
+    {
+        // steady sine through a dynamic bell; returns the level change at the output in dB
+        auto dynEqChange = [&] (float freq, float amp, Setup extra, bool sideOnly = false)
+        {
+            auto p = makeProc (fs, [&] (AuricMaster3Processor& q) {
+                setP (q, "eq2_freq", 1000.0f); setP (q, "eq2_q", 1.0f); setP (q, "eq2_gain", 0.0f);
+                setP (q, "eq2_dyn", 1.0f); setP (q, "eq2_thr", -20.0f); setP (q, "eq2_range", -6.0f);
+                if (extra) extra (q); });
+            const int total = (int) (fs * 2.0);
+            std::vector<float> l ((size_t) total), r ((size_t) total);
+            for (int i = 0; i < total; ++i)
+            {
+                const float v = amp * (float) std::sin (twoPi * freq * i / fs);
+                l[(size_t) i] = v; r[(size_t) i] = sideOnly ? -v : v;
+            }
+            auto lo = l, ro = r;
+            run (*p, lo, ro);
+            const size_t a0 = (size_t) fs, a1 = (size_t) total / block * block;
+            double ei = 0.0, eo = 0.0;
+            for (size_t i = a0; i < a1; ++i) { ei += (double) l[i] * l[i]; eo += (double) lo[i] * lo[i]; }
+            return (float) (10.0 * std::log10 (eo / ei));
+        };
+        const float quiet = dynEqChange (1000.0f, 0.03f, nullptr);   // band -33 dB RMS: below threshold
+        const float loud = dynEqChange (1000.0f, 0.5f, nullptr);     // band -9 dB RMS: 11 dB above
+        const float other = dynEqChange (100.0f, 0.5f, nullptr);     // loud, but outside the band
+        check (std::abs (quiet) < 0.1f, "dynamic EQ: inactive below threshold", "%+.2f dB", quiet);
+        check (std::abs (loud + 6.0f) < 0.4f, "dynamic EQ: full range when loud", "%+.2f dB (range -6)", loud);
+        check (std::abs (other) < 0.3f, "dynamic EQ: frequency selective", "%+.2f dB at 100 Hz (band at 1 kHz)", other);
+        const float boost = dynEqChange (1000.0f, 0.5f, [] (AuricMaster3Processor& q) { setP (q, "eq2_gain", 3.0f); });
+        check (std::abs (boost + 3.0f) < 0.4f, "dynamic EQ: static + dynamic gain", "%+.2f dB (static +3, range -6)", boost);
+        const float midOnly = dynEqChange (1000.0f, 0.5f, [] (AuricMaster3Processor& q) { setP (q, "eq2_mode", 1.0f); }, true);
+        check (std::abs (midOnly) < 0.3f, "dynamic EQ: mid band ignores side", "%+.2f dB (side-only signal, band in Mid mode)", midOnly);
+        const float off = dynEqChange (1000.0f, 0.5f, [] (AuricMaster3Processor& q) { setP (q, "eq2_dyn", 0.0f); });
+        check (std::abs (off) < 0.1f, "dynamic EQ: DYN off = static EQ", "%+.2f dB (static gain 0)", off);
+    }
+
     // ---------------- compressor ----------------
     {
         Compressor d;
@@ -505,13 +546,14 @@ int main (int argc, char** argv)
         const Sw sws[] = { { "eq2_mode", 0, 2, eqSetup }, { "eq_on", 1, 0, eqSetup }, { "lim_mode", 0, 2, [] (AuricMaster3Processor& p) { setP (p, "lim_on", 1.0f); } },
                            { "res_on", 0, 1, nullptr }, { "lim_on", 0, 1, nullptr }, { "dyn_on", 0, 1, [] (AuricMaster3Processor& p) { setP (p, "mb_mid_thr", -30.0f); } },
                            { "glue_on", 0, 1, [] (AuricMaster3Processor& p) { setP (p, "glue_thr", -30.0f); } }, { "sat_on", 0, 1, nullptr },
-                           { "mono_freq", 39, 120, nullptr }, { "lowcut", 20, 80, nullptr }, { "bypass", 0, 1, [] (AuricMaster3Processor& p) { fullChain (p); } } };
+                           { "mono_freq", 39, 120, nullptr },
+                           { "eq3_dyn", 0, 1, [] (AuricMaster3Processor& p) { setP (p, "eq3_freq", 1000.0f); setP (p, "eq3_thr", -40.0f); setP (p, "eq3_range", -9.0f); } }, { "lowcut", 20, 80, nullptr }, { "bypass", 0, 1, [] (AuricMaster3Processor& p) { fullChain (p); } } };
         for (auto& s : sws)
         {
             const float c = switchClickDb (s.id, s.a, s.b, s.s);
             if (c > worst) { worst = c; worstName = s.id; }
         }
-        check (worst < 6.0f, "click-free switching (11 controls)", "worst %.1f dB above steady state (%s)", worst, worstName);
+        check (worst < 6.0f, "click-free switching (12 controls)", "worst %.1f dB above steady state (%s)", worst, worstName);
     }
     {
         auto pEx = makeProc (fs, [] (AuricMaster3Processor& p) { setP (p, "sat_on", 1.0f); setP (p, "sat_high", 100.0f); setP (p, "sat_low", 0.0f); });
@@ -572,6 +614,69 @@ int main (int argc, char** argv)
         float diff = 0.0f;
         for (size_t i = 0; i < full; ++i) diff = juce::jmax (diff, std::abs (l1[i] - l2[i]));
         check (diff < 1.0e-5f, "large host blocks", "8192 vs 512 samples: max difference %.1e", diff);
+    }
+
+    // ---------------- undo / redo, presets ----------------
+    {
+        auto p = makeProc();
+        p->beginEdit();
+        setP (*p, "glue_thr", -30.0f);
+        p->endEdit();
+        p->beginEdit();
+        setP (*p, "glue_thr", -10.0f);
+        p->endEdit();
+        p->beginEdit();   // a click without a change must not create an undo step
+        p->endEdit();
+        p->undo();
+        const float u1 = val (*p, "glue_thr");
+        p->undo();
+        const float u2 = val (*p, "glue_thr");
+        p->redo();
+        const float r1 = val (*p, "glue_thr");
+        check (std::abs (u1 + 30.0f) < 0.01f && std::abs (u2 + 16.0f) < 0.01f && std::abs (r1 + 30.0f) < 0.01f, "undo / redo",
+               "after undo %.0f, undo %.0f, redo %.0f (expected -30, -16, -30)", u1, u2, r1);
+        // automation (not from the editor) is not recorded as an undo step
+        const int depth = p->getUndoDepth();
+        setP (*p, "glue_thr", -5.0f);
+        check (p->getUndoDepth() == depth, "undo ignores automation", "undo steps %d -> %d", depth, p->getUndoDepth());
+    }
+    {
+        const auto names = AuricMaster3Processor::getFactoryPresetNames();
+        bool allOk = names.size() >= 8;
+        juce::String bad;
+        for (int i = 0; i < names.size(); ++i)
+        {
+            auto p = makeProc();
+            p->loadFactoryPreset (i);
+            std::vector<float> l, r;
+            material (l, r, -24.0f, 0.05f, 70);
+            l.resize ((size_t) fs * 6); r.resize ((size_t) fs * 6);
+            run (*p, l, r);
+            bool finite = true;
+            float peak = 0.0f;
+            for (size_t k = 0; k < l.size(); ++k) { finite = finite && std::isfinite (l[k]) && std::isfinite (r[k]); peak = juce::jmax (peak, std::abs (l[k])); }
+            if (! finite || peak > 1.0f || p->getPresetName() != names[i]) { allOk = false; bad = names[i]; }
+        }
+        check (allOk, "factory presets load and play", "%d presets%s%s", names.size(), bad.isEmpty() ? "" : ", problem: ", bad.toRawUTF8());
+
+        // user preset round trip in a temporary folder; monitoring switches are not part of a preset
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("am3-preset-test");
+        dir.deleteRecursively();
+        auto a = makeProc();
+        a->setUserPresetDirectory (dir);
+        setP (*a, "glue_on", 1.0f); setP (*a, "glue_thr", -27.0f); setP (*a, "eq3_gain", 2.5f);
+        const bool saved = a->saveUserPreset ("Mein Test");
+        auto b = makeProc();
+        b->setUserPresetDirectory (dir);
+        setP (*b, "bypass", 1.0f);
+        const auto files = b->getUserPresetFiles();
+        const bool loaded = files.size() == 1 && b->loadPresetFile (files[0]);
+        check (saved && loaded && std::abs (val (*b, "glue_thr") + 27.0f) < 0.01f && std::abs (val (*b, "eq3_gain") - 2.5f) < 0.01f
+               && val (*b, "bypass") > 0.5f && b->getPresetName() == "Mein Test" && ! b->isPresetModified(),
+               "user preset save / load", "glue %.0f dB, EQ3 %+.1f dB, bypass kept: %s", val (*b, "glue_thr"), val (*b, "eq3_gain"), val (*b, "bypass") > 0.5f ? "yes" : "no");
+        setP (*b, "glue_thr", -20.0f);
+        check (b->isPresetModified(), "preset modified flag", "%s", b->isPresetModified() ? "set after a change" : "missing");
+        dir.deleteRecursively();
     }
 
     // ---------------- assistant ----------------
@@ -654,8 +759,13 @@ int main (int argc, char** argv)
         run (*p, l, r);
         const double pct = 100.0 * (juce::Time::getMillisecondCounterHiRes() - t0) / 6000.0;
         char name[64]; std::snprintf (name, sizeof (name), "CPU full chain @ %.0f kHz", rate / 1000.0);
-        // on shared CI machines timing is not reliable: report only
-        check (std::getenv ("CI") != nullptr || pct < (rate > 100000.0 ? 30.0 : 15.0), name, "%.1f %% of one core%s", pct, std::getenv ("CI") ? " (CI: informational)" : "");
+        // on shared CI machines and in sanitizer builds timing is not meaningful: report only
+       #if defined (__SANITIZE_ADDRESS__)
+        const bool timingInfoOnly = true;
+       #else
+        const bool timingInfoOnly = std::getenv ("CI") != nullptr;
+       #endif
+        check (timingInfoOnly || pct < (rate > 100000.0 ? 30.0 : 15.0), name, "%.1f %% of one core%s", pct, timingInfoOnly ? " (informational)" : "");
     }
 
     std::printf ("\n%d of %d checks passed\n", checks - failures, checks);

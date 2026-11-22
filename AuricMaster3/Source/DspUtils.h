@@ -47,6 +47,11 @@ struct Biquad
         const double w = w0 (fs, f), alpha = std::sin (w) / (2.0 * q), c = std::cos (w);
         set (1 - alpha, -2 * c, 1 + alpha, 1 + alpha, -2 * c, 1 - alpha);
     }
+    void setBandPass (double fs, double f, double q)   // constant 0 dB peak gain
+    {
+        const double w = w0 (fs, f), alpha = std::sin (w) / (2.0 * q), c = std::cos (w);
+        set (alpha, 0.0, -alpha, 1 + alpha, -2 * c, 1 - alpha);
+    }
     void setRaw (double nb0, double nb1, double nb2, double na1, double na2) { set (nb0, nb1, nb2, 1.0, na1, na2); }
 
     // magnitude response in dB at frequency f (for displays)

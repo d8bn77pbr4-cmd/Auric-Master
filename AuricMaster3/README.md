@@ -29,13 +29,20 @@ Die Frequenzweiche läuft nur, wenn ein Bandmodul aktiv ist, deshalb ist das Plu
 
 - **EINFACH:** Modul-Schalter in Signalreihenfolge, Klangkurve, KLANG (Tiefen/Mitten/Höhen), Glue-Threshold, Breite, Input/Output/Mix, Lautheitsziel mit LERNEN, Drive, Ceiling, Clipper, Limiter-Charakter.
 - **EQ:** Low Cut, High Cut (je 24 dB/Okt.), 4 Bänder (Low Shelf, 2 Glocken, High Shelf) mit Modus Stereo/Mitte/Seite. Punkte in der Kurve ziehen, Mausrad = Q.
+  - **Dynamic EQ:** Jedes Band kann dynamisch arbeiten (DYN). Liegt sein Frequenzbereich über THRESHOLD, kommt bis zu RANGE an Absenkung (−) oder Anhebung (+) dazu; die volle Range ist bei 10 dB über der Schwelle erreicht. Attack und Release gelten für alle Bänder. In der Kurve zeigt die gestrichelte Linie die statische EQ-Kurve, die gelben Linien die Range und die Punkte die aktuelle dynamische Änderung.
 - **DYNAMIK:** 3-Band-Kompression. Pro Band Threshold, Ratio, Attack, Release, Gain, dazu SOLO und BYPASS. Die Weichen lassen sich in der Grafik ziehen.
 - **GLUE:** Bus-Kompressor mit Kennlinie und Gain-Reduktions-Verlauf, Auto-Release, Sidechain-Hochpass, Makeup, Mix (Parallel-Kompression).
 - **STEREO & FARBE:** Vektorskop, Breite für Mitten und Höhen, Mono-Bass, WÄRME (Tape-Bandsättigung), GLANZ (Exciter).
 - **LIMITER:** Lautheitsverlauf mit Ziellinie, LERNEN, Drive, Ceiling (True Peak), Clipper (oversampled), Charakter, Output.
 - **RESONANZ:** dynamische Resonanzkontrolle mit 6 ziehbaren Bändern.
 - **Rechts, immer sichtbar:** LUFS integriert/momentan/kurzzeit, LRA, True-Peak-Maximum, Abweichung vom Ziel, Peak-Meter Ein/Aus, Korrelation, Gain-Reduktion aller Stufen.
-- **Kopfzeile:** Snapshots A–D, GLEICH LAUT (nur zum Hören, beim Export automatisch aus), ORIGINAL (= DAW-Bypass), ASSISTENT.
+- **Kopfzeile:** Snapshots A–D, Undo/Redo (Cmd/Strg+Z, Cmd/Strg+Umschalt+Z), GLEICH LAUT (nur zum Hören, beim Export automatisch aus), ORIGINAL (= DAW-Bypass), ASSISTENT.
+- **Presets (rechts oben):**
+  - 10 Werk-Presets als Startpunkte: Master sauber / warm & breit / laut / Hip-Hop / akustisch, Mix-Bus-Glue, Drum-Bus parallel, Resonanzen glätten, nur Limiter.
+  - Eigene Presets über `···` speichern; sie liegen als Dateien in `Dokumente/Auric Master 3/Presets`.
+  - Ein `*` zeigt an, dass das Preset geändert wurde. ORIGINAL, GLEICH LAUT und das Genre bleiben beim Laden unverändert.
+  - Nach dem Laden eines Master-Presets LERNEN klicken.
+- **Undo** erfasst nur deine Bedien-Aktionen (dazu Preset, Assistent, LERNEN), nicht die Automation der DAW.
 
 ## LERNEN (Lautheitsziel)
 
@@ -52,12 +59,19 @@ Genre wählen, ASSISTENT klicken und 15 s abspielen. Danach stellt der Assistent
 
 ## Qualitätssicherung
 
-Die Test-Suite (`tests/TestMain.cpp`, 38 Prüfungen) läuft bei jedem Build in GitHub Actions auf Windows und macOS. Bei einem Fehler wird kein Plugin ausgeliefert. Geprüft werden unter anderem:
+Bei jedem Build in GitHub Actions (Windows und macOS) laufen:
+- die Test-Suite (`tests/TestMain.cpp`, 49 Prüfungen),
+- **pluginval** mit höchster Strenge (10), das Standard-Prüfwerkzeug für Plugins (State, Automation aus anderen Threads, Puffergrößen, Bus-Layouts, Editor während der Verarbeitung, Parameter-Fuzzing),
+- **auval** (Apples Audio-Unit-Prüfung).
+
+Schlägt einer davon fehl, wird kein Plugin ausgeliefert. Geprüft werden unter anderem:
 
 - **Messung:** Lautheitsmessung nach BS.1770/EBU auf ±0,03 LU, LRA, True Peak.
 - **Transparenz:** Standardeinstellungen bit-transparent (−148 dB Restsignal), keine Latenz, Frequenzweiche flach.
 - **Determinismus:** Abspielstart ab Refrain vs. Songanfang: 0,00 LU Unterschied. Strophe/Refrain-Kontrast bleibt erhalten.
 - **LERNEN und Kompressor:** Ziele erreicht, nicht erreichbare Ziele werden gemeldet, Kennlinie exakt.
+- **Dynamic EQ:** unter der Schwelle inaktiv, volle Range bei lautem Signal, frequenzselektiv, statisch + dynamisch kombiniert, Mitte-Band ignoriert die Seite.
+- **Presets und Undo:** alle Werk-Presets laden und spielen, eigene Presets speichern/laden, Änderungs-Markierung, Undo/Redo, Automation erzeugt keine Undo-Schritte.
 - **Robustheit:**
   - NaN/Inf-Schutz, latenzausgeglichener Host-Bypass, klickfreies Schalten von 11 Bedienelementen.
   - Aliasing von Exciter und Clipper, Mono-Spuren, Snapshots mit Projekt-Neuladen, große Host-Puffer.
@@ -88,5 +102,4 @@ GitHub → *Actions* → neuester Lauf → Artefakte **AuricMaster3-VST3-Windows
 - **Klang nicht in FL getestet:** Der Klang wurde messtechnisch geprüft, nicht in FL Studio selbst. Rückmeldungen nach Gehör fließen in die nächsten Phasen ein.
 
 ## Geplant
-- **Phase 2:** Dynamic EQ, Presets (Werk und eigene), Undo/Redo.
-- **Phase 3:** pluginval/auval in der CI, Installer, Handbuch.
+Siehe [ROADMAP.md](ROADMAP.md): Installer, Handbuch, weitere Profi-Funktionen und zum Schluss ein analoges Studio-Design (Bedienung bleibt gleich).

@@ -1,5 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Presets.h"
+#include <map>
 
 namespace
 {
@@ -23,6 +25,9 @@ namespace
         "width_mid", "width_high", "mono_freq",
         "glue_thr", "glue_ratio", "glue_att", "glue_rel", "glue_auto", "glue_makeup", "glue_hpf", "glue_mix",
         "lim_drive", "ceiling", "lim_mode", "clip", "target",
+        "eq1_dyn", "eq1_thr", "eq1_range", "eq2_dyn", "eq2_thr", "eq2_range",
+        "eq3_dyn", "eq3_thr", "eq3_range", "eq4_dyn", "eq4_thr", "eq4_range",
+        "eq_dyn_att", "eq_dyn_rel",
         "assist_profile"
     };
     enum P
@@ -40,6 +45,8 @@ namespace
         pWidthMid, pWidthHigh, pMonoFreq,
         pGlueThr, pGlueRatio, pGlueAtt, pGlueRel, pGlueAuto, pGlueMakeup, pGlueHpf, pGlueMix,
         pLimDrive, pCeiling, pLimMode, pClip, pTarget,
+        pEqDyn1,                       // 4 x (dyn, thr, range)
+        pEqDynAtt = pEqDyn1 + 12, pEqDynRel,
         pAssistProfile,
         pCount
     };
@@ -57,7 +64,186 @@ AuricMaster3Processor::AuricMaster3Processor()
       apvts (*this, nullptr, "PARAMS", createLayout())
 {
     for (auto* id : ids) ptr.push_back (apvts.getRawParameterValue (id));
+    for (auto* prm : getParameters())
+    {
+        const auto id = dynamic_cast<juce::AudioProcessorParameterWithID*> (prm) != nullptr ? dynamic_cast<juce::AudioProcessorParameterWithID*> (prm)->paramID : juce::String();
+        excluded.push_back (id == "bypass" || id == "compare" || id == "assist_profile");
+        prm->addListener (this);
+    }
+    userPresetDir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Auric Master 3").getChildFile ("Presets");
+    presetValues = captureValues();
     startTimerHz (20);
+}
+
+AuricMaster3Processor::~AuricMaster3Processor()
+{
+    stopTimer();
+    for (auto* prm : getParameters()) prm->removeListener (this);
+}
+
+//==============================================================================
+std::vector<float> AuricMaster3Processor::captureValues() const
+{
+    std::vector<float> v;
+    for (auto* prm : getParameters()) v.push_back (prm->getValue());
+    return v;
+}
+
+bool AuricMaster3Processor::differs (const std::vector<float>& a, const std::vector<float>& b) const
+{
+    if (a.size() != b.size()) return true;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (! excluded[i] && std::abs (a[i] - b[i]) > 1.0e-5f) return true;
+    return false;
+}
+
+void AuricMaster3Processor::restoreValues (const std::vector<float>& values)
+{
+    const juce::ScopedValueSetter<bool> guard (restoring, true);
+    auto& params = getParameters();
+    for (size_t i = 0; i < values.size() && i < (size_t) params.size(); ++i)
+        if (! excluded[i] && std::abs (params[(int) i]->getValue() - values[i]) > 1.0e-6f)
+        {
+            params[(int) i]->beginChangeGesture();
+            params[(int) i]->setValueNotifyingHost (values[i]);
+            params[(int) i]->endChangeGesture();
+        }
+}
+
+void AuricMaster3Processor::parameterGestureChanged (int index, bool starting)
+{
+    if (restoring || index < 0 || index >= (int) excluded.size() || excluded[(size_t) index]) return;
+    if (starting) { if (activeGestures++ == 0) beginEdit(); }
+    else if (activeGestures > 0 && --activeGestures == 0) endEdit();
+}
+
+void AuricMaster3Processor::beginEdit()
+{
+    if (editDepth++ == 0) pendingEdit = captureValues();
+}
+
+void AuricMaster3Processor::endEdit()
+{
+    if (editDepth == 0 || --editDepth > 0) return;
+    if (differs (pendingEdit, captureValues()))
+    {
+        undoStack.push_back (pendingEdit);
+        if (undoStack.size() > 100) undoStack.erase (undoStack.begin());
+        redoStack.clear();
+    }
+}
+
+void AuricMaster3Processor::undo()
+{
+    if (undoStack.empty()) return;
+    redoStack.push_back (captureValues());
+    restoreValues (undoStack.back());
+    undoStack.pop_back();
+}
+
+void AuricMaster3Processor::redo()
+{
+    if (redoStack.empty()) return;
+    undoStack.push_back (captureValues());
+    restoreValues (redoStack.back());
+    redoStack.pop_back();
+}
+
+//==============================================================================
+juce::StringArray AuricMaster3Processor::getFactoryPresetNames()
+{
+    juce::StringArray names;
+    for (auto& pr : FactoryPresets::all()) names.add (juce::String::fromUTF8 (pr.name));
+    return names;
+}
+
+void AuricMaster3Processor::applyPresetValues (const std::function<float (const juce::String&, float)>& valueFor)
+{
+    beginEdit();   // one undo step
+    for (auto* prm : getParameters())
+    {
+        auto* withId = dynamic_cast<juce::RangedAudioParameter*> (prm);
+        if (withId == nullptr || excluded[(size_t) prm->getParameterIndex()]) continue;
+        const float def = withId->convertFrom0to1 (withId->getDefaultValue());
+        const float norm = withId->convertTo0to1 (valueFor (withId->paramID, def));
+        if (std::abs (prm->getValue() - norm) > 1.0e-6f)
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (norm);
+            prm->endChangeGesture();
+        }
+    }
+    endEdit();
+    presetValues = captureValues();
+}
+
+void AuricMaster3Processor::loadFactoryPreset (int index)
+{
+    const auto& list = FactoryPresets::all();
+    if (index < 0 || index >= (int) list.size()) return;
+    const auto& pr = list[(size_t) index];
+    applyPresetValues ([&pr] (const juce::String& id, float def)
+    {
+        for (auto& kv : pr.values) if (id == kv.first) return kv.second;
+        return def;
+    });
+    presetName = juce::String::fromUTF8 (pr.name);
+    factoryIndex = index;
+}
+
+juce::Array<juce::File> AuricMaster3Processor::getUserPresetFiles() const
+{
+    auto files = userPresetDir.findChildFiles (juce::File::findFiles, false, "*.am3preset");
+    files.sort();
+    return files;
+}
+
+bool AuricMaster3Processor::saveUserPreset (const juce::String& name)
+{
+    const auto clean = juce::File::createLegalFileName (name.trim());
+    if (clean.isEmpty() || ! userPresetDir.createDirectory()) return false;
+    juce::XmlElement xml ("AuricMaster3Preset");
+    xml.setAttribute ("name", name.trim());
+    xml.setAttribute ("version", JucePlugin_VersionString);
+    for (auto* prm : getParameters())
+        if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm); r != nullptr && ! excluded[(size_t) prm->getParameterIndex()])
+        {
+            auto* e = xml.createNewChildElement ("PARAM");
+            e->setAttribute ("id", r->paramID);
+            e->setAttribute ("value", (double) r->convertFrom0to1 (r->getValue()));
+        }
+    if (! xml.writeTo (userPresetDir.getChildFile (clean + ".am3preset"))) return false;
+    presetName = name.trim();
+    factoryIndex = -1;
+    presetValues = captureValues();
+    return true;
+}
+
+bool AuricMaster3Processor::loadPresetFile (const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || ! xml->hasTagName ("AuricMaster3Preset")) return false;
+    std::map<juce::String, float> values;
+    for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+        values[e->getStringAttribute ("id")] = (float) e->getDoubleAttribute ("value");
+    applyPresetValues ([&values] (const juce::String& id, float def)
+    {
+        auto it = values.find (id);
+        return it != values.end() ? it->second : def;   // parameters added in later versions: default
+    });
+    presetName = xml->getStringAttribute ("name", file.getFileNameWithoutExtension());
+    factoryIndex = -1;
+    return true;
+}
+
+bool AuricMaster3Processor::deleteUserPreset (const juce::File& file)
+{
+    return file.isAChildOf (userPresetDir) && file.deleteFile();
+}
+
+bool AuricMaster3Processor::isPresetModified() const
+{
+    return differs (presetValues, captureValues());
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AuricMaster3Processor::createLayout()
@@ -169,6 +355,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout AuricMaster3Processor::creat
     add (std::make_unique<AudioParameterFloat> (ParameterID { "clip", 1 }, "Clipper", pctR, 0.0f, pct));
     add (std::make_unique<AudioParameterChoice> (ParameterID { "target", 1 }, "Loudness Target", Targets::names(), 1));
 
+    // dynamic EQ: each band can follow the level of its own frequency range
+    for (int b = 0; b < 4; ++b)
+    {
+        const auto n = String (b + 1);
+        const String nm (eqName[b]);
+        add (std::make_unique<AudioParameterBool> (ParameterID { "eq" + n + "_dyn", 1 }, nm + " Dynamic", false));
+        add (std::make_unique<AudioParameterFloat> (ParameterID { "eq" + n + "_thr", 1 }, nm + " Dyn Threshold", NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -24.0f, dBfs));
+        add (std::make_unique<AudioParameterFloat> (ParameterID { "eq" + n + "_range", 1 }, nm + " Dyn Range", NormalisableRange<float> (-12.0f, 12.0f, 0.1f), -3.0f, dB));
+    }
+    add (std::make_unique<AudioParameterFloat> (ParameterID { "eq_dyn_att", 1 }, "EQ Dyn Attack", skewR (1.0f, 200.0f, 15.0f, 0.1f), 10.0f, ms));
+    add (std::make_unique<AudioParameterFloat> (ParameterID { "eq_dyn_rel", 1 }, "EQ Dyn Release", skewR (10.0f, 1000.0f, 150.0f, 1.0f), 150.0f, ms));
+
     add (std::make_unique<AudioParameterChoice> (ParameterID { "assist_profile", 1 }, "Assistant Genre", AutoMatcher::profileNames(), 0));
     return { p.begin(), p.end() };
 }
@@ -261,6 +459,14 @@ void AuricMaster3Processor::resetStates()
         b->reset();
     for (auto& b : eqMid) b.reset();
     for (auto& b : eqSide) b.reset();
+    for (auto& b : eqDet) b.reset();
+    eqDetLevel.fill (-100.0f);
+    eqDynDb.fill (0.0f);
+    eqDetPow.fill (0.0);
+    eqDetFreqLast.fill (-1.0f);
+    eqDetQLast.fill (-1.0f);
+    eqTotalLast.fill (1000.0f);
+    for (auto& g : eqDynGainDb) g.store (0.0f);
     eqGainS.fill (1000.0f);        // > 500: jump to the target on the next control block
     eqModeLast.fill (-1);
     eqFreqLast.fill (-1.0f);
@@ -452,6 +658,8 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         anySolo = anySolo || bandSolo[(size_t) b];
     }
     const bool dynOn = p (pDynOn) > 0.5f;
+    const bool dynOnB[4] = { p (pEqDyn1) > 0.5f, p (pEqDyn1 + 3) > 0.5f, p (pEqDyn1 + 6) > 0.5f, p (pEqDyn1 + 9) > 0.5f };
+    const float dynAttC = coeff (sr / ctrl, p (pEqDynAtt) * 0.001), dynRelC = coeff (sr / ctrl, p (pEqDynRel) * 0.001);
     // modules that were completely off start from a clean state
     if (dynRamp.value <= 0.0f && dynRamp.target > 0.0f) for (auto& c : bandComp) c.reset();
     if (glueRamp.value <= 0.0f && glueRamp.target > 0.0f) glueComp.reset();
@@ -483,13 +691,46 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
             auto& gs = eqGainS[(size_t) b];
             const bool modeChanged = mode != eqModeLast[(size_t) b];
             const float cur = gs > 500.0f ? g : gs + (g - gs) * smoothC;
-            const bool changed = modeChanged || std::abs (cur - gs) > 0.0005f
-                                 || ! juce::exactlyEqual (f, eqFreqLast[(size_t) b]) || ! juce::exactlyEqual (q, eqQLast[(size_t) b]);
             gs = cur;
+
+            // dynamic part: level of the band (detector on the EQ input) -> extra gain up to RANGE
+            const int dbase = pEqDyn1 + b * 3;
+            auto& dyn = eqDynDb[(size_t) b];
+            if (p (dbase) > 0.5f)
+            {
+                if (! juce::exactlyEqual (f, eqDetFreqLast[(size_t) b]) || ! juce::exactlyEqual (q, eqDetQLast[(size_t) b]))
+                {
+                    if (b == 0)      eqDet[0].setLowPass (sr, f, 0.707);
+                    else if (b == 3) eqDet[3].setHighPass (sr, f, 0.707);
+                    else             eqDet[(size_t) b].setBandPass (sr, f, q);
+                    eqDetFreqLast[(size_t) b] = f;
+                    eqDetQLast[(size_t) b] = q;
+                }
+                const float lvl = powerToDb ((float) (eqDetPow[(size_t) b] / juce::jmax (1, lastCtrlLen)));
+                auto& dl = eqDetLevel[(size_t) b];
+                dl = lvl > dl ? lvl + (dl - lvl) * dynAttC : lvl + (dl - lvl) * dynRelC;
+                const float x = dl - p (dbase + 1);   // dB over threshold, soft knee 4 dB, full range at +10 dB
+                const float a = x <= -2.0f ? 0.0f : (x < 2.0f ? (x + 2.0f) * (x + 2.0f) / 80.0f : juce::jmin (1.0f, x / 10.0f));
+                const float t = p (dbase + 2) * a;
+                dyn = t;   // ballistics are on the detector level
+            }
+            else
+            {
+                dyn *= dynRelC;   // glide back to the static curve
+                if (std::abs (dyn) < 0.001f) dyn = 0.0f;
+                eqDetLevel[(size_t) b] = -100.0f;
+            }
+            eqDetPow[(size_t) b] = 0.0;
+            eqDynGainDb[(size_t) b].store (dyn);
+
+            const float total = cur + dyn;
+            const bool changed = modeChanged || std::abs (total - eqTotalLast[(size_t) b]) > 0.0005f
+                                 || ! juce::exactlyEqual (f, eqFreqLast[(size_t) b]) || ! juce::exactlyEqual (q, eqQLast[(size_t) b]);
             eqModeLast[(size_t) b] = mode;
             if (changed)
             {
-                const float gm = mode == 2 ? 0.0f : cur, gside = mode == 1 ? 0.0f : cur;
+                eqTotalLast[(size_t) b] = total;
+                const float gm = mode == 2 ? 0.0f : total, gside = mode == 1 ? 0.0f : total;
                 if (b == 0)      { eqMid[0].setLowShelf (sr, f, q, gm);  eqSide[0].setLowShelf (sr, f, q, gside); }
                 else if (b == 3) { eqMid[3].setHighShelf (sr, f, q, gm); eqSide[3].setHighShelf (sr, f, q, gside); }
                 else             { eqMid[(size_t) b].setPeak (sr, f, q, gm); eqSide[(size_t) b].setPeak (sr, f, q, gside); }
@@ -535,6 +776,15 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
                 float m = 0.5f * (l + r), s = 0.5f * (l - r);
                 if (lowCutOn)  { m = lowCut2.process (lowCut1.process (m, 0), 0);   s = lowCut2.process (lowCut1.process (s, 1), 1); }
                 if (highCutOn) { m = highCut2.process (highCut1.process (m, 0), 0); s = highCut2.process (highCut1.process (s, 1), 1); }
+                // dynamic EQ detectors see the signal before the bands (feed-forward)
+                for (int b = 0; b < 4; ++b)
+                    if (dynOnB[b])
+                    {
+                        const float dm = eqDet[(size_t) b].process (m, 0), ds = eqDet[(size_t) b].process (s, 1);
+                        const int mode = eqModeLast[(size_t) b];
+                        const float a = mode == 1 ? std::abs (dm) : (mode == 2 ? std::abs (ds) : std::abs (dm) + std::abs (ds));
+                        eqDetPow[(size_t) b] += (double) a * a;
+                    }
                 for (int b = 0; b < 4; ++b) { m = eqMid[(size_t) b].process (m, 0); s = eqSide[(size_t) b].process (s, 1); }
                 m = toneHighB.process (toneMidB.process (toneLowB.process (m, 0), 0), 0);
                 s = toneHighB.process (toneMidB.process (toneLowB.process (s, 1), 1), 1);
@@ -661,6 +911,8 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
             L[i] = l;
             if (stereo) R[i] = r;
         }
+
+        lastCtrlLen = len;
 
         // assistant: level statistics per band and of the whole signal (for thresholds)
         if (collecting)
@@ -953,6 +1205,7 @@ void AuricMaster3Processor::applyAssistant()
     if (learnedPower.empty()) return;
     using juce::String;
     preAssistState = apvts.copyState();
+    beginEdit();
     const int profile = (int) p (pAssistProfile);
     std::array<float, numClashBands> defaults;
     std::copy (std::begin (clashDefaultFreqs), std::end (clashDefaultFreqs), defaults.begin());
@@ -1096,6 +1349,7 @@ void AuricMaster3Processor::applyAssistant()
                   + "Breite " + String (juce::roundToInt (wMid)) + "/" + String (juce::roundToInt (wHigh)) + " %" + dot
                   + "Mono-Bass " + String (juce::roundToInt (mono)) + " Hz" + dot
                   + "PLR " + String (plr, 1) + " dB";
+    endEdit();
     hasAutoResult = true;
     autoResultTime = juce::Time::getMillisecondCounter();
     ++assistRuns;
@@ -1134,6 +1388,8 @@ void AuricMaster3Processor::getStateInformation (juce::MemoryBlock& destData)
     state.appendChild (snaps, nullptr);
     state.setProperty ("uiWidth", uiWidth.load(), nullptr);
     state.setProperty ("uiPage", uiPage.load(), nullptr);
+    state.setProperty ("presetName", presetName, nullptr);
+    state.setProperty ("presetFactory", factoryIndex, nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -1145,8 +1401,12 @@ void AuricMaster3Processor::setStateInformation (const void* data, int sizeInByt
     auto state = juce::ValueTree::fromXml (*xml);
     uiWidth.store ((int) state.getProperty ("uiWidth", 0));
     uiPage.store ((int) state.getProperty ("uiPage", 0));
+    presetName = state.getProperty ("presetName", presetName).toString();
+    factoryIndex = (int) state.getProperty ("presetFactory", -1);
     state.removeProperty ("uiWidth", nullptr);
     state.removeProperty ("uiPage", nullptr);
+    state.removeProperty ("presetName", nullptr);
+    state.removeProperty ("presetFactory", nullptr);
     auto snaps = state.getChildWithName ("Snapshots");
     for (auto& s : snapshots) s = {};
     if (snaps.isValid())
@@ -1158,6 +1418,9 @@ void AuricMaster3Processor::setStateInformation (const void* data, int sizeInByt
         state.removeChild (snaps, nullptr);
     }
     apvts.replaceState (state);
+    presetValues = captureValues();
+    undoStack.clear();
+    redoStack.clear();
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

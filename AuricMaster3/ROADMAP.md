@@ -1,0 +1,26 @@
+# Auric Master 3 – Roadmap und Entscheidungslog
+
+Arbeitsweise: Jede Iteration durchläuft einen Entscheidungs-Loop (Schritt nach Kundennutzen wählen, gegen Alternativen prüfen) und einen Ergebnis-Loop (Build, alle Tests, ASan bei DSP-Änderungen, Screenshot bei UI-Änderungen, Selbstreview, CI grün). Priorität: Klangqualität und Zuverlässigkeit > Workflow > Komfort.
+
+## Stand
+
+| Phase | Inhalt | Status |
+|---|---|---|
+| 1 | Deterministische Engine, Module einzeln schaltbar, LERNEN, klassische Kompressoren, Host-Bypass, NaN-Schutz, Latenz nur bei Bedarf | fertig |
+| 2 | Dynamic EQ (DYN, Threshold, Range, gemeinsames Attack/Release) | fertig |
+| 2 | Presets (Werk + eigene, Browser, Änderungs-Markierung) | fertig |
+| 2 | Undo / Redo (nur Bedien-Aktionen, keine Automation) | fertig |
+| 3 | pluginval Strenge 10 (Windows + macOS) und auval in jedem Build | fertig |
+| 3 | Installer (Windows, macOS) | offen |
+| 3 | Handbuch | offen |
+| 4 | Profi-Erweiterungen nach Kundennutzen (Meter PLR/PSR + Streaming-Vorschau, Mid/Side im Multiband, weitere) | offen |
+| 5 | **Analoges Studio-Design** – nur Optik, alle Bedienelemente und die Steuerung bleiben unverändert. Erst wenn alle Funktionen stehen. Eigenständiger Look im Stil echter Studio-Hardware, keine Kopie von Waves/SSL. Bei Beginn: Farbrichtung mit dem Nutzer klären. | offen |
+
+Nicht ohne Rückfrage: Dither, Referenz-Track (vom Nutzer früher abgelehnt).
+
+## Entscheidungslog
+
+- **pluginval/auval vor Dynamic EQ gezogen:** Zuverlässigkeit hat Vorrang. pluginval deckt typische Host-Probleme auf (State, Automation-Threads, Puffergrößen, Editor). Ergebnis: Windows und macOS SUCCESS bei Strenge 10, auval bestanden.
+- **Dynamic EQ mit gemeinsamem Attack/Release statt pro Band:** Die Seite bleibt übersichtlich, die Zeitparameter sind trotzdem echt. Der Detektor arbeitet feed-forward auf dem Bandsignal vor dem EQ und folgt dem Bandmodus (Stereo/Mitte/Seite).
+- **Undo über Parameter-Gesten statt JUCE-UndoManager:** Der UndoManager würde DAW-Automation mit aufzeichnen. Gesten erzeugt nur die Bedienoberfläche. Preset, Assistent und LERNEN zählen je als ein Schritt. ORIGINAL und GLEICH LAUT sind nicht Teil von Undo und Presets.
+- **Presets in realen Einheiten gespeichert:** Sie sind robust gegen spätere Bereichsänderungen. Neue Parameter späterer Versionen erhalten beim Laden ihren Standardwert.
