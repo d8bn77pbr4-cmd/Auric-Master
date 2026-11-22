@@ -214,8 +214,8 @@ private:
 
     juce::SmoothedValue<float> inGainS, outGainS, mixS, bypassMix;
     float matchProcDb = 0.0f, matchOrigDb = 0.0f;
-    SimpleDelay origDelay, mixDelay;
-    juce::AudioBuffer<float> origBuffer, mixBuffer;
+    SimpleDelay origDelay, mixDelay, resDeltaDelay, limInDelay;
+    juce::AudioBuffer<float> origBuffer, mixBuffer, resDeltaBuffer, limDeltaBuffer;
     float corrLR = 0.0f, corrLL = 0.0f, corrRR = 0.0f;
 
     // LERNEN

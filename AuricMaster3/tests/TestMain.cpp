@@ -495,6 +495,81 @@ int main (int argc, char** argv)
         check (std::abs (off) < 0.1f, "dynamic EQ: DYN off = static EQ", "%+.2f dB (static gain 0)", off);
     }
 
+    // ---------------- multiband mid/side mode ----------------
+    {
+        // loud side-only 1 kHz tone through the mid band: GR depends on the band mode
+        auto bandGr = [&] (float mode, bool sideSignal)
+        {
+            auto p = makeProc (fs, [mode] (AuricMaster3Processor& q) {
+                setP (q, "dyn_on", 1.0f); setP (q, "mb_mid_thr", -30.0f); setP (q, "mb_mid_ratio", 4.0f); setP (q, "mb_mid_mode", mode); });
+            const int total = (int) (fs * 1.5);
+            std::vector<float> l ((size_t) total), r ((size_t) total);
+            for (int i = 0; i < total; ++i)
+            {
+                const float v = 0.3f * (float) std::sin (twoPi * 1000.0 * i / fs);
+                l[(size_t) i] = v; r[(size_t) i] = sideSignal ? -v : v;
+            }
+            auto lo = l, ro = r;
+            run (*p, lo, ro);
+            double ei = 0.0, eo = 0.0;
+            for (size_t i = (size_t) fs; i < (size_t) total / block * block; ++i) { ei += (double) l[i] * l[i]; eo += (double) lo[i] * lo[i]; }
+            return (float) (10.0 * std::log10 (eo / ei));
+        };
+        const float stereoSide = bandGr (0.0f, true), midSide = bandGr (1.0f, true), sideSide = bandGr (2.0f, true), sideMono = bandGr (2.0f, false);
+        check (stereoSide < -3.0f && std::abs (midSide) < 0.2f && sideSide < -3.0f && std::abs (sideMono) < 0.2f, "multiband mid/side mode",
+               "side tone: stereo %+.1f, mid %+.1f, side %+.1f dB | mono tone in side mode %+.1f dB", stereoSide, midSide, sideSide, sideMono);
+    }
+
+    // ---------------- monitoring: MONO / SIDE ----------------
+    {
+        std::vector<float> l, r;
+        material (l, r, -18.0f, 0.1f, 91);
+        l.resize ((size_t) fs * 2); r.resize ((size_t) fs * 2);
+        auto setup = [] (AuricMaster3Processor& q) { setP (q, "glue_on", 1.0f); setP (q, "width_high", 130.0f); };
+        auto pn = makeProc (fs, setup);
+        auto pm = makeProc (fs, [&] (AuricMaster3Processor& q) { setup (q); setP (q, "mon_mono", 1.0f); });
+        auto ps = makeProc (fs, [&] (AuricMaster3Processor& q) { setup (q); setP (q, "mon_side", 1.0f); });
+        auto ln = l, rn = r, lm = l, rm = r, ls = l, rs = r;
+        run (*pn, ln, rn); run (*pm, lm, rm); run (*ps, ls, rs);
+        float em = 0.0f, es = 0.0f;
+        for (size_t i = 4800; i < l.size() / block * block; ++i)
+        {
+            em = juce::jmax (em, std::abs (lm[i] - 0.5f * (ln[i] + rn[i])), std::abs (rm[i] - lm[i]));
+            es = juce::jmax (es, std::abs (ls[i] - 0.5f * (ln[i] - rn[i])), std::abs (rs[i] - ls[i]));
+        }
+        check (em < 1.0e-5f && es < 1.0e-5f, "monitoring MONO / SIDE", "mono error %.1e, side error %.1e", em, es);
+    }
+
+    // ---------------- DELTA listening: normal + delta = what went into the stage ----------------
+    {
+        std::vector<float> l, r;
+        material (l, r, -18.0f, 0.1f, 81);
+        l.resize ((size_t) fs * 4); r.resize ((size_t) fs * 4);
+        auto runPair = [&] (Setup setup, const char* deltaId, float inputGainDb)
+        {
+            auto pn = makeProc (fs, setup);
+            auto pd = makeProc (fs, [&] (AuricMaster3Processor& q) { setup (q); setP (q, deltaId, 1.0f); });
+            auto ln = l, rn = r, ld = l, rd = r;
+            run (*pn, ln, rn);
+            run (*pd, ld, rd);
+            const size_t lat = (size_t) pn->getLatencySamples(), end = l.size() / block * block;
+            const float g = std::pow (10.0f, inputGainDb / 20.0f);
+            float err = 0.0f, deltaPeak = 0.0f;
+            for (size_t i = lat + 4800; i < end; ++i)
+            {
+                err = juce::jmax (err, std::abs (ln[i] + ld[i] - g * l[i - lat]));
+                deltaPeak = juce::jmax (deltaPeak, std::abs (ld[i]));
+            }
+            return std::make_pair (err, deltaPeak);
+        };
+        const auto res = runPair ([] (AuricMaster3Processor& q) { setP (q, "res_on", 1.0f); setP (q, "res_depth", 80.0f); setP (q, "eq_on", 0.0f); setP (q, "st_on", 0.0f); },
+                                  "res_delta", 0.0f);
+        check (res.first < 1.0e-4f && res.second > 1.0e-3f, "DELTA resonance", "normal + delta = input (max error %.1e), delta peak %.3f", res.first, res.second);
+        const auto lim = runPair ([] (AuricMaster3Processor& q) { setP (q, "lim_on", 1.0f); setP (q, "lim_drive", 12.0f); setP (q, "clip", 40.0f); setP (q, "eq_on", 0.0f); setP (q, "st_on", 0.0f); },
+                                  "lim_delta", 12.0f);
+        check (lim.first < 1.0e-4f && lim.second > 1.0e-2f, "DELTA limiter + clipper", "normal + delta = driven input (max error %.1e), delta peak %.3f", lim.first, lim.second);
+    }
+
     // ---------------- compressor ----------------
     {
         Compressor d;

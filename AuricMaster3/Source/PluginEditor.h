@@ -160,6 +160,8 @@ private:
     std::array<float, LoudnessMeter::historySize> histOut {}, histIn {};
     std::array<float, 6> grS {};
     std::array<float, 4> peakS {}, peakHold {};
+    std::array<float, 90> tpRing {};   // true peak of the last 3 s (for PSR)
+    int tpPos = 0;
     float corrS = 1.0f;
 };
 
@@ -243,7 +245,7 @@ private:
     juce::Array<juce::File> userPresets;
     juce::String shownPreset;
     std::array<std::unique_ptr<SnapButton>, 4> snaps;
-    Toggle matchButton, originalButton;
+    Toggle matchButton, originalButton, monoButton, sideButton;
     juce::TextButton assistButton { "ASSISTENT" };
     Combo genre;
     std::array<std::unique_ptr<TabButton>, numPages> tabs;
@@ -278,6 +280,7 @@ private:
     DynamicsView dynView;
     std::array<Knob, 3> mbThr, mbRatio, mbAtt, mbRel, mbGain;
     std::array<Toggle, 3> mbSolo, mbByp;
+    std::array<Combo, 3> mbMode;
     Knob xLow, xHigh;
 
     // GLUE
@@ -299,7 +302,7 @@ private:
     juce::TextButton learnL { "LERNEN" };
 
     // RESONANZ
-    Toggle resOn;
+    Toggle resOn, resDelta, limDelta;
     ClashDisplay clash;
     Knob resDepth, resSharp, resSens, resAttack, resRelease;
 };

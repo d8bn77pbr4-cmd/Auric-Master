@@ -28,6 +28,9 @@ namespace
         "eq1_dyn", "eq1_thr", "eq1_range", "eq2_dyn", "eq2_thr", "eq2_range",
         "eq3_dyn", "eq3_thr", "eq3_range", "eq4_dyn", "eq4_thr", "eq4_range",
         "eq_dyn_att", "eq_dyn_rel",
+        "res_delta", "lim_delta",
+        "mb_low_mode", "mb_mid_mode", "mb_high_mode",
+        "mon_mono", "mon_side",
         "assist_profile"
     };
     enum P
@@ -47,6 +50,9 @@ namespace
         pLimDrive, pCeiling, pLimMode, pClip, pTarget,
         pEqDyn1,                       // 4 x (dyn, thr, range)
         pEqDynAtt = pEqDyn1 + 12, pEqDynRel,
+        pResDelta, pLimDelta,
+        pMbMode,                       // 3 x mode (stereo / mid / side)
+        pMonMono = pMbMode + 3, pMonSide,
         pAssistProfile,
         pCount
     };
@@ -67,7 +73,7 @@ AuricMaster3Processor::AuricMaster3Processor()
     for (auto* prm : getParameters())
     {
         const auto id = dynamic_cast<juce::AudioProcessorParameterWithID*> (prm) != nullptr ? dynamic_cast<juce::AudioProcessorParameterWithID*> (prm)->paramID : juce::String();
-        excluded.push_back (id == "bypass" || id == "compare" || id == "assist_profile");
+        excluded.push_back (id == "bypass" || id == "compare" || id == "assist_profile" || id == "res_delta" || id == "lim_delta" || id == "mon_mono" || id == "mon_side");
         prm->addListener (this);
     }
     userPresetDir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Auric Master 3").getChildFile ("Presets");
@@ -367,6 +373,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout AuricMaster3Processor::creat
     add (std::make_unique<AudioParameterFloat> (ParameterID { "eq_dyn_att", 1 }, "EQ Dyn Attack", skewR (1.0f, 200.0f, 15.0f, 0.1f), 10.0f, ms));
     add (std::make_unique<AudioParameterFloat> (ParameterID { "eq_dyn_rel", 1 }, "EQ Dyn Release", skewR (10.0f, 1000.0f, 150.0f, 1.0f), 150.0f, ms));
 
+    // multiband: each band can work on the whole stereo signal, only the mid or only the side
+    for (int b = 0; b < 3; ++b)
+        add (std::make_unique<AudioParameterChoice> (ParameterID { String ("mb_") + bandIds[b] + "_mode", 1 }, String ("Band ") + bandName[b] + " Mode",
+                                                     StringArray { "Stereo", "Mid", "Side" }, 0));
+
+    // monitoring: hear only what a stage removes (not saved in presets, ignored while rendering offline)
+    boolP ("res_delta", "Resonance Delta (monitoring)", false);
+    boolP ("lim_delta", "Limiter Delta (monitoring)", false);
+    boolP ("mon_mono", "Listen Mono (monitoring)", false);
+    boolP ("mon_side", "Listen Side (monitoring)", false);
+
     add (std::make_unique<AudioParameterChoice> (ParameterID { "assist_profile", 1 }, "Assistant Genre", AutoMatcher::profileNames(), 0));
     return { p.begin(), p.end() };
 }
@@ -423,6 +440,10 @@ void AuricMaster3Processor::prepareToPlay (double sampleRate, int samplesPerBloc
     mixDelay.prepare (numCh, maxLatency + 8);
     origBuffer.setSize (numCh, blockCap);
     mixBuffer.setSize (numCh, blockCap);
+    resDeltaBuffer.setSize (numCh, blockCap);
+    limDeltaBuffer.setSize (numCh, blockCap);
+    resDeltaDelay.prepare (numCh, maxLatency + 8);
+    limInDelay.prepare (numCh, maxLatency + 8);
 
     for (auto* r : { &eqRamp, &dynRamp, &satRamp, &stRamp, &glueRamp, &bandRamp }) r->prepare (sr, 0.02f);
     updateControl (0);
@@ -503,6 +524,9 @@ void AuricMaster3Processor::applyConfig (int config)
     activeConfig = config;
     origDelay.setDelay (latencyFor (config));
     mixDelay.setDelay ((config & cfgRes) ? resonance.getLatency() : 0);
+    const int limLatency = (config & cfgLim) ? latencyFor (cfgLim) : 0;
+    resDeltaDelay.setDelay (limLatency);   // the resonance delta waits for the limiter stage
+    limInDelay.setDelay (limLatency);
     latencySamplesNow.store (latencyFor (config));
     latencyDirty.store (true);
     configSwitching = false;
@@ -638,7 +662,23 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
     mixDelay.process (dry, chans);
 
     // 1) RESONANZ (when off, only the analysis runs for the displays and the assistant)
-    if (activeConfig & cfgRes) resonance.process (main, chans);
+    const bool realtime = ! isNonRealtime();
+    const bool resDelta = realtime && p (pResDelta) > 0.5f && (activeConfig & cfgRes) != 0;
+    const bool limDelta = realtime && ! resDelta && p (pLimDelta) > 0.5f && (activeConfig & cfgLim) != 0;
+    juce::AudioBuffer<float> resDeltaView (resDeltaBuffer.getArrayOfWritePointers(), chans, 0, n);
+    if (activeConfig & cfgRes)
+    {
+        resonance.process (main, chans);
+        // what the resonance stage removed: dry (aligned) minus processed
+        for (int ch = 0; ch < chans; ++ch)
+        {
+            const float* d = dry.getReadPointer (ch);
+            const float* w = main.getReadPointer (ch);
+            float* o = resDeltaView.getWritePointer (ch);
+            for (int i = 0; i < n; ++i) o[i] = d[i] - w[i];
+        }
+        resDeltaDelay.process (resDeltaView, chans);
+    }
     else if (analyserWanted.load() || resonance.isLearning()) resonance.analyse (main, chans);
 
     // 2) EQ + KLANG, 3) crossover with DYNAMIK / FARBE / STEREO, 4) GLUE
@@ -658,6 +698,7 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         anySolo = anySolo || bandSolo[(size_t) b];
     }
     const bool dynOn = p (pDynOn) > 0.5f;
+    const int bandMode[3] = { (int) p (pMbMode), (int) p (pMbMode + 1), (int) p (pMbMode + 2) };
     const bool dynOnB[4] = { p (pEqDyn1) > 0.5f, p (pEqDyn1 + 3) > 0.5f, p (pEqDyn1 + 6) > 0.5f, p (pEqDyn1 + 9) > 0.5f };
     const float dynAttC = coeff (sr / ctrl, p (pEqDynAtt) * 0.001), dynRelC = coeff (sr / ctrl, p (pEqDynRel) * 0.001);
     // modules that were completely off start from a clean state
@@ -833,11 +874,26 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
             // DYNAMIK: per-band compressors
             const float rd = dynRamp.next();
             float g[3] = { 1.0f, 1.0f, 1.0f };
+            float* bandSig[3] = { lo, mi, hi };
             if (rd > 0.0f)
                 for (int b = 0; b < 3; ++b)
                 {
-                    const float gc = bandByp[(size_t) b] ? 1.0f : bandComp[(size_t) b].process (pw[b]);
-                    g[b] = (1.0f + rd * (gc * bandGainS[(size_t) b] - 1.0f)) * soloS[(size_t) b];
+                    float* x = bandSig[b];
+                    const int mode = bandMode[b];
+                    float det = pw[b];
+                    if (mode == 1) { const float m = 0.5f * (x[0] + x[1]); det = m * m; }
+                    if (mode == 2) { const float s = 0.5f * (x[0] - x[1]); det = s * s; }
+                    const float gc = bandByp[(size_t) b] ? 1.0f : bandComp[(size_t) b].process (det);
+                    const float gComp = 1.0f + rd * (gc * bandGainS[(size_t) b] - 1.0f);
+                    if (mode == 0) g[b] = gComp * soloS[(size_t) b];
+                    else
+                    {
+                        // compress only the mid or only the side of this band
+                        float m = 0.5f * (x[0] + x[1]), s = 0.5f * (x[0] - x[1]);
+                        if (mode == 1) m *= gComp; else s *= gComp;
+                        x[0] = m + s; x[1] = m - s;
+                        g[b] = soloS[(size_t) b];
+                    }
                     grMin[b] = juce::jmin (grMin[b], bandByp[(size_t) b] ? 0.0f : bandComp[(size_t) b].getGainReductionDb());
                 }
 
@@ -952,6 +1008,10 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
             const float g = dbToGain (driveS);
             for (int ch = 0; ch < chans; ++ch) main.getWritePointer (ch)[i] *= g;
         }
+        // input of the limiter stage, delayed by its latency, for DELTA
+        for (int ch = 0; ch < chans; ++ch) limDeltaBuffer.copyFrom (ch, 0, main, ch, 0, n);
+        juce::AudioBuffer<float> limInView (limDeltaBuffer.getArrayOfWritePointers(), chans, 0, n);
+        limInDelay.process (limInView, chans);
         const float limCeiling = ceilingLin * dbToGain (-0.3f);   // headroom for the down-sampling filter
         const float clipAmt = p (pClip) * 0.01f;
         clipper.setThreshold (limCeiling * dbToGain (4.0f * (1.0f - clipAmt)), clipAmt > 0.01f);
@@ -977,6 +1037,12 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         grLimit.store (limiter.getGainReductionDb());
         oversampling->processSamplesDown (block);
         tpGuard.process (main.getArrayOfWritePointers(), chans, n, ceilingLin * dbToGain (-0.05f));
+        for (int ch = 0; ch < chans; ++ch)
+        {
+            float* o = limDeltaBuffer.getWritePointer (ch);
+            const float* w = main.getReadPointer (ch);
+            for (int i = 0; i < n; ++i) o[i] -= w[i];   // what limiter + clipper removed
+        }
     }
     else
     {
@@ -1061,6 +1127,11 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         scopePos.store (sp, std::memory_order_release);
     }
 
+    // DELTA monitoring replaces the output (meters above keep showing the real result)
+    if (resDelta || limDelta)
+        for (int ch = 0; ch < chans; ++ch)
+            main.copyFrom (ch, 0, resDelta ? resDeltaBuffer : limDeltaBuffer, ch, 0, n);
+
     // ORIGINAL (also the host's bypass) and level match. Level match is a listening aid only: it turns the
     // louder version down to the quieter one and is ignored while the host renders offline.
     float diff = 0.0f;
@@ -1084,6 +1155,19 @@ void AuricMaster3Processor::processChunk (juce::AudioBuffer<float>& main, int ch
         {
             float* d = main.getWritePointer (ch);
             d[i] = (d[i] * gp + orig.getSample (ch, i) * go) * configFade;
+        }
+    }
+
+    // MONO / SIDE listening (also applies to ORIGINAL, so both can be compared in mono)
+    if (stereo && realtime && (p (pMonMono) > 0.5f || p (pMonSide) > 0.5f))
+    {
+        const bool side = p (pMonSide) > 0.5f;
+        float* l = main.getWritePointer (0);
+        float* r = main.getWritePointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            const float v = side ? 0.5f * (l[i] - r[i]) : 0.5f * (l[i] + r[i]);
+            l[i] = r[i] = v;
         }
     }
 }

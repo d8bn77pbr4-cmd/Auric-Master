@@ -30,13 +30,16 @@ Die Frequenzweiche läuft nur, wenn ein Bandmodul aktiv ist, deshalb ist das Plu
 - **EINFACH:** Modul-Schalter in Signalreihenfolge, Klangkurve, KLANG (Tiefen/Mitten/Höhen), Glue-Threshold, Breite, Input/Output/Mix, Lautheitsziel mit LERNEN, Drive, Ceiling, Clipper, Limiter-Charakter.
 - **EQ:** Low Cut, High Cut (je 24 dB/Okt.), 4 Bänder (Low Shelf, 2 Glocken, High Shelf) mit Modus Stereo/Mitte/Seite. Punkte in der Kurve ziehen, Mausrad = Q.
   - **Dynamic EQ:** Jedes Band kann dynamisch arbeiten (DYN). Liegt sein Frequenzbereich über THRESHOLD, kommt bis zu RANGE an Absenkung (−) oder Anhebung (+) dazu; die volle Range ist bei 10 dB über der Schwelle erreicht. Attack und Release gelten für alle Bänder. In der Kurve zeigt die gestrichelte Linie die statische EQ-Kurve, die gelben Linien die Range und die Punkte die aktuelle dynamische Änderung.
-- **DYNAMIK:** 3-Band-Kompression. Pro Band Threshold, Ratio, Attack, Release, Gain, dazu SOLO und BYPASS. Die Weichen lassen sich in der Grafik ziehen.
+- **DYNAMIK:** 3-Band-Kompression. Pro Band Threshold, Ratio, Attack, Release, Gain, Modus (Stereo/Mid/Side), dazu SOLO und BYPASS. Die Weichen lassen sich in der Grafik ziehen.
 - **GLUE:** Bus-Kompressor mit Kennlinie und Gain-Reduktions-Verlauf, Auto-Release, Sidechain-Hochpass, Makeup, Mix (Parallel-Kompression).
 - **STEREO & FARBE:** Vektorskop, Breite für Mitten und Höhen, Mono-Bass, WÄRME (Tape-Bandsättigung), GLANZ (Exciter).
-- **LIMITER:** Lautheitsverlauf mit Ziellinie, LERNEN, Drive, Ceiling (True Peak), Clipper (oversampled), Charakter, Output.
-- **RESONANZ:** dynamische Resonanzkontrolle mit 6 ziehbaren Bändern.
-- **Rechts, immer sichtbar:** LUFS integriert/momentan/kurzzeit, LRA, True-Peak-Maximum, Abweichung vom Ziel, Peak-Meter Ein/Aus, Korrelation, Gain-Reduktion aller Stufen.
-- **Kopfzeile:** Snapshots A–D, Undo/Redo (Cmd/Strg+Z, Cmd/Strg+Umschalt+Z), GLEICH LAUT (nur zum Hören, beim Export automatisch aus), ORIGINAL (= DAW-Bypass), ASSISTENT.
+- **LIMITER:** Lautheitsverlauf mit Ziellinie, LERNEN, Drive, Ceiling (True Peak), Clipper (oversampled), Charakter, Output, DELTA (nur hören, was entfernt wird).
+- **RESONANZ:** dynamische Resonanzkontrolle mit 6 ziehbaren Bändern und DELTA.
+- **Rechts, immer sichtbar:**
+  - LUFS integriert/momentan/kurzzeit, LRA, True Peak, PLR, PSR.
+  - Streaming-Anpassung (Spotify, YouTube, Apple), Abweichung vom Ziel.
+  - Peak-Meter Ein/Aus, Korrelation, Gain-Reduktion aller Stufen.
+- **Kopfzeile:** Snapshots A–D, Undo/Redo (Cmd/Strg+Z, Cmd/Strg+Umschalt+Z), GLEICH LAUT (nur zum Hören, beim Export automatisch aus), ORIGINAL (= DAW-Bypass), MONO/SIDE (Abhören), ASSISTENT.
 - **Presets (rechts oben):**
   - 10 Werk-Presets als Startpunkte: Master sauber / warm & breit / laut / Hip-Hop / akustisch, Mix-Bus-Glue, Drum-Bus parallel, Resonanzen glätten, nur Limiter.
   - Eigene Presets über `···` speichern; sie liegen als Dateien in `Dokumente/Auric Master 3/Presets`.
@@ -60,7 +63,7 @@ Genre wählen, ASSISTENT klicken und 15 s abspielen. Danach stellt der Assistent
 ## Qualitätssicherung
 
 Bei jedem Build in GitHub Actions (Windows und macOS) laufen:
-- die Test-Suite (`tests/TestMain.cpp`, 49 Prüfungen),
+- die Test-Suite (`tests/TestMain.cpp`, 53 Prüfungen),
 - **pluginval** mit höchster Strenge (10), das Standard-Prüfwerkzeug für Plugins (State, Automation aus anderen Threads, Puffergrößen, Bus-Layouts, Editor während der Verarbeitung, Parameter-Fuzzing),
 - **auval** (Apples Audio-Unit-Prüfung).
 
@@ -72,6 +75,7 @@ Schlägt einer davon fehl, wird kein Plugin ausgeliefert. Geprüft werden unter 
 - **LERNEN und Kompressor:** Ziele erreicht, nicht erreichbare Ziele werden gemeldet, Kennlinie exakt.
 - **Dynamic EQ:** unter der Schwelle inaktiv, volle Range bei lautem Signal, frequenzselektiv, statisch + dynamisch kombiniert, Mitte-Band ignoriert die Seite.
 - **Presets und Undo:** alle Werk-Presets laden und spielen, eigene Presets speichern/laden, Änderungs-Markierung, Undo/Redo, Automation erzeugt keine Undo-Schritte.
+- **DELTA und Mid/Side:** normaler Ausgang + Delta = Eingang der Stufe (Fehler < 10⁻⁶); Mid-, Side- und Stereo-Modus reagieren nur auf ihren Signalanteil.
 - **Robustheit:**
   - NaN/Inf-Schutz, latenzausgeglichener Host-Bypass, klickfreies Schalten von 11 Bedienelementen.
   - Aliasing von Exciter und Clipper, Mono-Spuren, Snapshots mit Projekt-Neuladen, große Host-Puffer.
@@ -80,9 +84,15 @@ Schlägt einer davon fehl, wird kein Plugin ausgeliefert. Geprüft werden unter 
 
 Zusätzlich lokal: AddressSanitizer/UBSan ohne Befund.
 
+Ausführliche Anleitung: **[Handbuch](docs/Handbuch.md)**.
+
 ## Installation
 
-GitHub → *Actions* → neuester Lauf → Artefakte **AuricMaster3-VST3-Windows** bzw. **AuricMaster3-macOS**.
+GitHub → *Actions* → neuester Lauf. Am einfachsten sind die Installer:
+- **macOS:** Artefakt **AuricMaster3-macOS-Installer** → `Auric Master 3 Installer.pkg` per **Rechtsklick → Öffnen** starten. Er installiert VST3 + AU für alle Benutzer und meldet das AU an.
+- **Windows:** Artefakt **AuricMaster3-Setup-Windows** → Setup starten (SmartScreen: *Weitere Informationen → Trotzdem ausführen*).
+
+Alternativ manuell mit den Artefakten **AuricMaster3-VST3-Windows** bzw. **AuricMaster3-macOS**:
 
 ### macOS
 1. `AuricMaster3-macOS` herunterladen und in *Downloads* entpacken (ggf. die innere Zip-Datei noch einmal doppelklicken), sodass `~/Downloads/dist/` entsteht.

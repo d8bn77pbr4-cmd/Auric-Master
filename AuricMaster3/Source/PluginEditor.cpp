@@ -9,6 +9,7 @@ namespace
     String dbText (float v, int decimals = 1)
     {
         if (v <= -99.0f) return u8 ("\xe2\x80\x93");
+        if (std::abs (v) < 0.05f) v = 0.0f;   // no "-0.0"
         return (v > 0.04f ? "+" : "") + String (v, decimals);
     }
 
@@ -737,6 +738,7 @@ LoudnessPanel::LoudnessPanel (AuricMaster3Processor& p) : proc (p)
 {
     histOut.fill (-100.0f);
     histIn.fill (-100.0f);
+    tpRing.fill (-100.0f);
     resetButton.setColour (juce::TextButton::buttonColourId, Pal::panel);
     resetButton.setColour (juce::TextButton::textColourOffId, Pal::accent);
     resetButton.setTooltip (u8 ("Messung neu starten (integrierte Lautheit, LRA, True-Peak-Maximum)"));
@@ -774,6 +776,8 @@ void LoudnessPanel::refresh()
         peakHold[(size_t) i] = juce::jmax (db, peakHold[(size_t) i] - 0.15f);
     }
     corrS = corrS * 0.85f + proc.correlation.load() * 0.15f;
+    tpRing[(size_t) tpPos] = proc.outMeter.getTruePeakDb();
+    tpPos = (tpPos + 1) % (int) tpRing.size();
     repaint();
 }
 
@@ -828,27 +832,35 @@ void LoudnessPanel::paint (juce::Graphics& g)
     const float ceiling = raw (proc, "ceiling");
     const float tpMax = proc.outMeter.getTruePeakMaxDb();
     const bool limOn = raw (proc, "lim_on") > 0.5f;
+    // PLR = true peak max - integrated, PSR = true peak (3 s) - short-term: how much dynamics is left
+    const float st = proc.outMeter.getShortTerm();
+    float tp3 = -100.0f;
+    for (float v : tpRing) tp3 = jmax (tp3, v);
+    const String plr = integ > -70.0f && tpMax > -99.0f ? String (tpMax - integ, 1) : u8 ("\xe2\x80\x93");
+    const String psr = st > -70.0f && tp3 > -99.0f ? String (tp3 - st, 1) : u8 ("\xe2\x80\x93");
     struct Tile { String label, value, unit; Colour colour; };
-    const Tile tiles[4] = {
+    const Tile tiles[6] = {
         { "MOMENTAN", dbText (proc.outMeter.getMomentary()), "LUFS", Pal::text },
-        { "KURZZEIT", dbText (proc.outMeter.getShortTerm()), "LUFS", Pal::text },
+        { "KURZZEIT", dbText (st), "LUFS", Pal::text },
         { "LRA", String (proc.outMeter.getLra(), 1), "LU", Pal::text },
-        { "TRUE PEAK MAX", dbText (tpMax), "dBTP", (limOn ? tpMax > ceiling + 0.1f : tpMax > 0.0f) ? Pal::warn : Pal::text } };
-    for (int i = 0; i < 4; ++i)
+        { "TRUE PEAK", dbText (tpMax), "dBTP", (limOn ? tpMax > ceiling + 0.1f : tpMax > 0.0f) ? Pal::warn : Pal::text },
+        { "PLR", plr, "dB", Pal::text },
+        { "PSR", psr, "dB", Pal::text } };
+    const float tw = ((float) W - 28.0f - 8.0f) / 3.0f;
+    for (int i = 0; i < 6; ++i)
     {
-        const auto tr = Rectangle<float> (14.0f + (float) (i % 2) * ((float) W - 28.0f) * 0.5f + (i % 2 ? 4.0f : 0.0f), 114.0f + (float) (i / 2) * 54.0f,
-                                          ((float) W - 28.0f) * 0.5f - 4.0f, 48.0f);
+        const auto tr = Rectangle<float> (14.0f + (float) (i % 3) * (tw + 4.0f), 114.0f + (float) (i / 3) * 54.0f, tw, 48.0f);
         g.setColour (Pal::bg);
         g.fillRoundedRectangle (tr, 8.0f);
         g.setColour (Pal::dim);
         g.setFont (FontOptions (10.0f, Font::bold));
         g.drawText (tiles[i].label, tr.reduced (10.0f, 5.0f).withHeight (12.0f), Justification::centredLeft);
         g.setColour (tiles[i].colour);
-        g.setFont (FontOptions (20.0f, Font::bold));
-        g.drawText (tiles[i].value, tr.reduced (10.0f, 0.0f).withTrimmedTop (18.0f).withHeight (26.0f), Justification::centredLeft);
+        g.setFont (FontOptions (18.0f, Font::bold));
+        g.drawText (tiles[i].value, tr.reduced (8.0f, 0.0f).withTrimmedTop (18.0f).withHeight (26.0f), Justification::centredLeft);
         g.setColour (Pal::dim);
-        g.setFont (FontOptions (10.5f, Font::bold));
-        g.drawText (tiles[i].unit, tr.reduced (10.0f, 0.0f).withTrimmedTop (24.0f).withHeight (20.0f), Justification::centredRight);
+        g.setFont (FontOptions (9.0f, Font::bold));
+        g.drawText (tiles[i].unit, tr.reduced (6.0f, 0.0f).withTrimmedTop (2.0f).withHeight (14.0f), Justification::centredRight);
     }
 
     // history
@@ -894,16 +906,44 @@ void LoudnessPanel::paint (juce::Graphics& g)
     g.setColour (Pal::screenText.withAlpha (0.6f));
     g.drawText ("Eingang", (int) hist.getX() + 110, (int) hist.getY() + 4, 60, 12, Justification::centredLeft);
 
+    // streaming preview: how much the platforms would change the level (approximation of their normalisation)
+    g.setColour (Pal::dim);
+    g.setFont (FontOptions (10.0f, Font::bold));
+    g.drawText ("STREAMING-ANPASSUNG", 16, 314, 200, 12, Justification::centredLeft);
+    {
+        struct Pf { const char* name; float target; bool boosts; };
+        const Pf pf[3] = { { "SPOTIFY", -14.0f, true }, { "YOUTUBE", -14.0f, false }, { "APPLE", -16.0f, true } };
+        for (int k = 0; k < 3; ++k)
+        {
+            const float x = 16.0f + (float) k * ((float) W - 32.0f) / 3.0f;
+            g.setColour (Pal::dim);
+            g.setFont (FontOptions (9.0f, Font::bold));
+            g.drawText (pf[k].name, (int) x, 328, 90, 11, Justification::centredLeft);
+            String v = u8 ("\xe2\x80\x93");
+            Colour c = Pal::text;
+            if (integ > -70.0f)
+            {
+                float d = pf[k].target - integ;
+                if (! pf[k].boosts) d = jmin (0.0f, d);
+                v = dbText (d) + " dB";
+                c = d < -3.0f ? Pal::warn : Pal::text;
+            }
+            g.setColour (c);
+            g.setFont (FontOptions (13.0f, Font::bold));
+            g.drawText (v, (int) x, 340, 96, 15, Justification::centredLeft);
+        }
+    }
+
     // sample-peak meters in / out
     g.setColour (Pal::dim);
     g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText ("PEAK EIN", 16, 316, 80, 12, Justification::centredLeft);
-    g.drawText ("PEAK AUS", W / 2 + 4, 316, 80, 12, Justification::centredLeft);
+    g.drawText ("PEAK EIN", 16, 362, 80, 12, Justification::centredLeft);
+    g.drawText ("PEAK AUS", W / 2 + 4, 362, 80, 12, Justification::centredLeft);
     for (int i = 0; i < 4; ++i)
     {
         const float x0 = i < 2 ? 16.0f : (float) W * 0.5f + 4.0f;
         const float w = (float) W * 0.5f - 20.0f;
-        auto b = Rectangle<float> (x0, 332.0f + (float) (i % 2) * 10.0f, w, 7.0f);
+        auto b = Rectangle<float> (x0, 376.0f + (float) (i % 2) * 8.0f, w, 6.0f);
         g.setColour (Pal::track);
         g.fillRoundedRectangle (b, 3.0f);
         const float frac = jlimit (0.0f, 1.0f, (peakS[(size_t) i] + 60.0f) / 60.0f), hold = jlimit (0.0f, 1.0f, (peakHold[(size_t) i] + 60.0f) / 60.0f);
@@ -914,26 +954,26 @@ void LoudnessPanel::paint (juce::Graphics& g)
     }
     g.setColour (Pal::text);
     g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText (dbText (jmax (peakHold[0], peakHold[1])) + " dB", 16, 352, 120, 12, Justification::centredLeft);
-    g.drawText (dbText (jmax (peakHold[2], peakHold[3])) + " dB", W / 2 + 4, 352, 120, 12, Justification::centredLeft);
+    g.drawText (dbText (jmax (peakHold[0], peakHold[1])) + " dB", 16, 391, 120, 12, Justification::centredLeft);
+    g.drawText (dbText (jmax (peakHold[2], peakHold[3])) + " dB", W / 2 + 4, 391, 120, 12, Justification::centredLeft);
 
     // input loudness, drive
     const float inI = proc.inMeter.getIntegrated();
     g.setColour (Pal::dim);
-    g.drawText ("EINGANG", 16, 374, 120, 12, Justification::centredLeft);
-    g.drawText (limOn ? "DRIVE (FEST)" : "LIMITER", W / 2 + 4, 374, 140, 12, Justification::centredLeft);
+    g.drawText ("EINGANG", 16, 410, 120, 12, Justification::centredLeft);
+    g.drawText (limOn ? "DRIVE (FEST)" : "LIMITER", W / 2 + 4, 410, 140, 12, Justification::centredLeft);
     g.setColour (Pal::text);
-    g.setFont (FontOptions (15.0f, Font::bold));
-    g.drawText ((inI > -70.0f ? String (inI, 1) : u8 ("\xe2\x80\x93")) + " LUFS", 16, 388, 140, 20, Justification::centredLeft);
-    g.drawText (limOn ? dbText (raw (proc, "lim_drive")) + " dB" : String ("aus"), W / 2 + 4, 388, 140, 20, Justification::centredLeft);
+    g.setFont (FontOptions (14.0f, Font::bold));
+    g.drawText ((inI > -70.0f ? String (inI, 1) : u8 ("\xe2\x80\x93")) + " LUFS", 16, 423, 140, 18, Justification::centredLeft);
+    g.drawText (limOn ? dbText (raw (proc, "lim_drive")) + " dB" : String ("aus"), W / 2 + 4, 423, 140, 18, Justification::centredLeft);
 
     // correlation
     g.setColour (Pal::dim);
     g.setFont (FontOptions (10.0f, Font::bold));
-    g.drawText ("KORRELATION", 16, 418, 140, 12, Justification::centredLeft);
+    g.drawText ("KORRELATION", 16, 448, 140, 12, Justification::centredLeft);
     g.setColour (corrS < 0.0f ? Pal::warn : Pal::text);
-    g.drawText (String (corrS, 2), W - 80, 418, 64, 12, Justification::centredRight);
-    auto bar = Rectangle<float> (16.0f, 434.0f, (float) W - 32.0f, 8.0f);
+    g.drawText (String (corrS, 2), W - 80, 448, 64, 12, Justification::centredRight);
+    auto bar = Rectangle<float> (16.0f, 463.0f, (float) W - 32.0f, 7.0f);
     g.setColour (Pal::track);
     g.fillRoundedRectangle (bar, 4.0f);
     const float mx = bar.getX() + bar.getWidth() * (jlimit (-1.0f, 1.0f, corrS) + 1.0f) * 0.5f;
@@ -944,11 +984,11 @@ void LoudnessPanel::paint (juce::Graphics& g)
 
     // gain reduction
     g.setColour (Pal::dim);
-    g.drawText ("GAIN-REDUKTION", 16, 456, 160, 12, Justification::centredLeft);
+    g.drawText ("GAIN-REDUKTION", 16, 480, 160, 12, Justification::centredLeft);
     const String names[6] = { "TIEFEN", "MITTEN", u8 ("H\xc3\x96HEN"), "GLUE", "CLIPPER", "LIMITER" };
     for (int i = 0; i < 6; ++i)
     {
-        const float y = 474.0f + (float) i * 19.0f;
+        const float y = 495.0f + (float) i * 16.0f;
         g.setColour (Pal::dim);
         g.setFont (FontOptions (10.0f, Font::bold));
         g.drawText (names[i], 16, (int) y, 64, 14, Justification::centredLeft);
@@ -1068,6 +1108,11 @@ MainView::MainView (AuricMaster3Processor& p)
     setupToggle (matchButton, *this, "compare", "GLEICH LAUT", u8 ("Nur zum Vergleichen: die lautere Version wird leiser gemacht. Beim Export automatisch aus."));
     setupToggle (originalButton, *this, "bypass", "ORIGINAL", u8 ("Original h\xc3\xb6ren (Bypass, latenzausgeglichen). Entspricht dem Bypass-Knopf der DAW."));
 
+    setupToggle (monoButton, *this, "mon_mono", "MONO", u8 ("Mono abh\xc3\xb6ren: Mono-Kompatibilit\xc3\xa4t pr\xc3\xbc" "fen (nur zum Abh\xc3\xb6ren, beim Export aus)"));
+    setupToggle (sideButton, *this, "mon_side", "SIDE", u8 ("Nur den Stereo-Anteil abh\xc3\xb6ren (nur zum Abh\xc3\xb6ren, beim Export aus)"));
+    monoButton.button.onClick = [this] { if (monoButton.button.getToggleState()) if (auto* s = proc.apvts.getParameter ("mon_side")) s->setValueNotifyingHost (0.0f); };
+    sideButton.button.onClick = [this] { if (sideButton.button.getToggleState()) if (auto* m = proc.apvts.getParameter ("mon_mono")) m->setValueNotifyingHost (0.0f); };
+
     setupCombo (genre, *this, "assist_profile", "GENRE", u8 ("Klangziel f\xc3\xbcr den Assistenten"));
     genre.label.setJustificationType (juce::Justification::centredRight);
     assistButton.setColour (juce::TextButton::buttonColourId, Pal::accent);
@@ -1156,6 +1201,7 @@ MainView::MainView (AuricMaster3Processor& p)
         setupKnob (mbGain[(size_t) b], pd, (pre + "gain").toRawUTF8(), "GAIN", u8 ("Pegel des Bandes (Makeup)"));
         setupToggle (mbSolo[(size_t) b], pd, (pre + "solo").toRawUTF8(), "SOLO", u8 ("Nur dieses Band h\xc3\xb6ren"));
         setupToggle (mbByp[(size_t) b], pd, (pre + "byp").toRawUTF8(), "BYPASS", u8 ("Band unbearbeitet durchlassen"));
+        setupCombo (mbMode[(size_t) b], pd, (pre + "mode").toRawUTF8(), "MODUS", u8 ("Stereo = ganzes Band, Mid = nur Mono-Anteil, Side = nur Stereo-Anteil komprimieren"));
     }
     setupKnob (xLow, pd, "xover_low", "WEICHE 1", u8 ("Trennfrequenz Tiefen / Mitten (Linkwitz-Riley, phasenrichtig)"));
     setupKnob (xHigh, pd, "xover_high", "WEICHE 2", u8 ("Trennfrequenz Mitten / H\xc3\xb6hen"));
@@ -1215,6 +1261,8 @@ MainView::MainView (AuricMaster3Processor& p)
     // RESONANZ
     auto& pr = pages[res];
     setupToggle (resOn, pr, "res_on", "RESONANZ AKTIV", u8 ("Resonanz-Kontrolle ein/aus (braucht ca. 43 ms Latenz, nur wenn aktiv)"));
+    setupToggle (resDelta, pr, "res_delta", "DELTA", u8 ("Nur h\xc3\xb6ren, was die Resonanz-Kontrolle entfernt (nur zum Abh\xc3\xb6ren, beim Export aus)"));
+    setupToggle (limDelta, pl, "lim_delta", "DELTA", u8 ("Nur h\xc3\xb6ren, was Limiter und Clipper entfernen \xe2\x80\x93 kann laut sein (nur zum Abh\xc3\xb6ren, beim Export aus)"));
     clash.setLarge (true);
     pr.addAndMakeVisible (clash);
     setupKnob (resDepth, pr, "res_depth", "TIEFE", u8 ("Wie stark st\xc3\xb6rende Resonanzen abgesenkt werden"));
@@ -1413,6 +1461,9 @@ void MainView::paint (juce::Graphics& g)
     g.drawText ("MIX- & MASTERING-SUITE", 21, 37, 220, 14, Justification::centredLeft);
     g.drawText ("SNAPSHOT", 263, 6, 120, 12, Justification::centredLeft);
     g.drawText ("UNDO", 418, 6, 70, 12, Justification::centredLeft);
+    g.drawText ("VERGLEICH", 493, 6, 120, 12, Justification::centredLeft);
+    g.drawText (u8 ("ABH\xc3\x96REN"), 707, 6, 100, 12, Justification::centredLeft);
+    g.drawText ("ASSISTENT", 825, 6, 100, 12, Justification::centredLeft);
 
     g.setColour (Pal::border);
     g.drawHorizontalLine (102, 16.0f, 816.0f);
@@ -1431,15 +1482,17 @@ void MainView::resized()
     for (int i = 0; i < 4; ++i) snaps[(size_t) i]->setBounds (262 + i * 36, 22, 32, 28);
     undoArrow.setBounds (416, 22, 30, 28);
     redoArrow.setBounds (450, 22, 30, 28);
-    matchButton.button.setBounds (492, 16, 110, 30);
-    originalButton.button.setBounds (608, 16, 94, 30);
-    genre.label.setBounds (706, 16, 50, 30);
-    genre.box.setBounds (760, 16, 166, 30);
+    matchButton.button.setBounds (492, 22, 106, 28);
+    originalButton.button.setBounds (602, 22, 92, 28);
+    monoButton.button.setBounds (706, 22, 54, 28);
+    sideButton.button.setBounds (764, 22, 50, 28);
+    genre.label.setBounds (824, 22, 46, 28);
+    genre.box.setBounds (872, 22, 122, 28);
     presetPrev.setBounds (834, 72, 22, 26);
     presetBox.setBounds (860, 68, 210, 32);
     presetNext.setBounds (1074, 72, 22, 26);
     presetMenu.setBounds (1100, 68, 44, 32);
-    assistButton.setBounds (940, 13, 204, 36);
+    assistButton.setBounds (1004, 13, 140, 36);
     const int tabW[numPages] = { 96, 86, 112, 96, 154, 112, 144 };
     for (int i = 0, x = 16; i < numPages; x += tabW[i], ++i) tabs[(size_t) i]->setBounds (x, 68, tabW[i], 34);
     for (auto& pg : pages) pg.setBounds (16, 110, 800, 590);
@@ -1510,7 +1563,8 @@ void MainView::layoutDyn()
         placeKnob (mbRatio[(size_t) b], { x + 100, 288, 94, 104 });
         placeKnob (mbAtt[(size_t) b], { x + 6, 396, 94, 94 });
         placeKnob (mbRel[(size_t) b], { x + 100, 396, 94, 94 });
-        placeKnob (mbGain[(size_t) b], { x + 53, 494, 94, 92 });
+        placeCombo (mbMode[(size_t) b], { x + 8, 520, 82, 46 });
+        placeKnob (mbGain[(size_t) b], { x + 100, 494, 94, 92 });
     }
     placeKnob (xLow, { 670, 284, 90, 100 });
     placeKnob (xHigh, { 670, 392, 90, 100 });
@@ -1545,10 +1599,11 @@ void MainView::layoutStereo()
 void MainView::layoutLimit()
 {
     limOn.button.setBounds (0, 0, 130, 28);
+    limDelta.button.setBounds (140, 0, 80, 28);
     limView.setBounds (0, 36, 800, 284);
     placeCombo (targetL, { 16, 362, 220, 46 });
     learnL.setBounds (16, 416, 220, 40);
-    learnInfoL.setBounds (12, 460, 370, 44);
+    learnInfoL.setBounds (12, 460, 232, 46);
     placeKnob (driveL, { 254, 356, 124, 132 });
     placeKnob (ceilingL, { 420, 356, 120, 120 });
     placeKnob (clip, { 544, 356, 120, 120 });
@@ -1559,6 +1614,7 @@ void MainView::layoutLimit()
 void MainView::layoutRes()
 {
     resOn.button.setBounds (0, 0, 150, 28);
+    resDelta.button.setBounds (160, 0, 80, 28);
     clash.setBounds (0, 36, 800, 424);
     placeKnob (resDepth, { 40, 492, 120, 94 });
     placeKnob (resSharp, { 190, 492, 120, 94 });

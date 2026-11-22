@@ -1,0 +1,4 @@
+#!/bin/sh
+# make the newly installed Audio Unit visible without a restart
+killall -9 AudioComponentRegistrar 2>/dev/null || true
+exit 0

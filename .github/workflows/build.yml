@@ -96,10 +96,21 @@ jobs:
           Get-ChildItem pv-logs -File | ForEach-Object { Get-Content $_.FullName }
           Write-Host "pluginval exit code: $($p.ExitCode)"
           exit $p.ExitCode
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { choco install innosetup --no-progress -y }
+          & $iscc AuricMaster3/installer/AuricMaster3.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: AuricMaster3-VST3-Windows
           path: build-am3/AuricMaster3_artefacts/Release/VST3/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuricMaster3-Setup-Windows
+          path: installer-out/AuricMaster3-Setup-Windows.exe
 
   am3-macos:
     runs-on: macos-15-intel   # still builds a universal (arm64 + x86_64) plugin
@@ -130,7 +141,13 @@ jobs:
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           auval -v aufx AuM3 Auri
           $PV --strictness-level 10 --verbose --timeout-ms 600000 --validate ~/Library/Audio/Plug-Ins/Components/"Auric Master 3.component"
+      - name: Build installer (.pkg)
+        run: sh AuricMaster3/installer/build-macos-pkg.sh 3.0.0
       - uses: actions/upload-artifact@v4
         with:
           name: AuricMaster3-macOS
           path: AuricMaster3-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuricMaster3-macOS-Installer
+          path: "Auric Master 3 Installer.pkg"
