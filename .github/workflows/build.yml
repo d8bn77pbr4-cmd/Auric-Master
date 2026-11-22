@@ -91,8 +91,8 @@ jobs:
           Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval
           New-Item -ItemType Directory -Force -Path pv-logs | Out-Null
-          $args = '--strictness-level 10 --verbose --timeout-ms 600000 --output-dir pv-logs --validate "build-am3/AuricMaster3_artefacts/Release/VST3/Auric Master 3.vst3"'
-          $p = Start-Process -FilePath ./pluginval/pluginval.exe -ArgumentList $args -Wait -PassThru -NoNewWindow
+          $pvArgs = '--strictness-level 10 --verbose --timeout-ms 600000 --output-dir pv-logs --validate "build-am3/AuricMaster3_artefacts/Release/VST3/Auric Master 3.vst3"'
+          $p = Start-Process -FilePath ./pluginval/pluginval.exe -ArgumentList $pvArgs -Wait -PassThru -NoNewWindow
           Get-ChildItem pv-logs -File | ForEach-Object { Get-Content $_.FullName }
           Write-Host "pluginval exit code: $($p.ExitCode)"
           exit $p.ExitCode
