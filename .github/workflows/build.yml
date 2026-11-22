@@ -88,7 +88,10 @@ jobs:
       - name: Validate with pluginval (strictness 10)
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
+          for ($i = 1; $i -le 6; $i++) {
+            try { Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip; break }
+            catch { if ($i -eq 6) { throw }; Start-Sleep -Seconds 10 }
+          }
           Expand-Archive pluginval.zip -DestinationPath pluginval
           New-Item -ItemType Directory -Force -Path pv-logs | Out-Null
           $pvArgs = '--strictness-level 10 --verbose --timeout-ms 600000 --output-dir pv-logs --validate "build-am3/AuricMaster3_artefacts/Release/VST3/Auric Master 3.vst3"'
@@ -132,7 +135,7 @@ jobs:
           ditto -c -k --keepParent dist AuricMaster3-macOS.zip
       - name: Validate with pluginval (strictness 10) and auval
         run: |
-          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          curl -sSL --retry 6 --retry-all-errors --retry-delay 10 -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
           unzip -q pluginval.zip
           PV=./pluginval.app/Contents/MacOS/pluginval
           $PV --strictness-level 10 --verbose --timeout-ms 600000 --validate "dist/Auric Master 3.vst3"
